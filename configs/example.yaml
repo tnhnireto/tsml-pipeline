@@ -1,0 +1,9 @@
+data:
+  symbol: "SPY"
+  start: "2010-01-01"
+  end: "2023-12-31"
+  train_end: "2020-12-31"
+  val_end: "2021-12-31"
+
+raw_data_dir: "data/raw"
+processed_dir: "data/processed"
