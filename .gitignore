@@ -22,3 +22,13 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Reports / plots (keep manually selected examples if needed)
+reports/
+
+# Jupyter notebooks (if you add later)
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
