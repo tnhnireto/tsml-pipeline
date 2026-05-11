@@ -237,3 +237,108 @@ class TestCosts:
         result_default = run_backtest(preds, close)
         result_zero = run_backtest(preds, close, costs_bps=0.0)
         pd.testing.assert_frame_equal(result_default, result_zero)
+
+
+# ---------------------------------------------------------------------------
+# Holding period
+# ---------------------------------------------------------------------------
+
+class TestHoldingPeriod:
+    """
+    Tests for the holding_period parameter.
+
+    The no-lookahead guarantee must hold for every holding period:
+    a signal on day t must not influence the position until day t+1.
+    """
+
+    def test_holding_period_1_matches_default_output(self):
+        """
+        holding_period=1 must produce bit-for-bit identical output to the
+        default call (holding_period not specified).  This is the backward-
+        compatibility guarantee.
+        """
+        preds = _preds([1, 0, 1, 1, 0, 0, 1])
+        close = _close([100.0, 101.0, 99.0, 102.0, 101.0, 103.0, 105.0])
+        result_default = run_backtest(preds, close)
+        result_hp1     = run_backtest(preds, close, holding_period=1)
+        pd.testing.assert_frame_equal(result_default, result_hp1)
+
+    def test_holding_period_5_creates_exposure_for_five_days(self):
+        """
+        A single signal on day k must produce position=1 on days
+        k+1, k+2, k+3, k+4, k+5 and position=0 everywhere else.
+
+        Prediction series (10 days): [0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+                                              ^--- signal on day 2
+
+        Expected positions in result (days 1-9, day 0 is dropped):
+            day 1: 0  (signal not yet seen)
+            day 2: 0  (signal on THIS day — not yet executable)
+            day 3: 1  ← day 2 signal, +1
+            day 4: 1  ← day 2 signal, +2
+            day 5: 1  ← day 2 signal, +3
+            day 6: 1  ← day 2 signal, +4
+            day 7: 1  ← day 2 signal, +5
+            day 8: 0  (signal expired)
+            day 9: 0
+        """
+        preds = _preds([0, 0, 1, 0, 0, 0, 0, 0, 0, 0])
+        close = _close([100.0] * 10)
+        result = run_backtest(preds, close, holding_period=5)
+
+        expected = [0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]
+        actual   = result["position"].tolist()
+        assert actual == expected, (
+            f"Expected 5-day exposure after signal.\n"
+            f"  expected: {expected}\n"
+            f"  got:      {actual}"
+        )
+
+    def test_no_position_taken_on_signal_day(self):
+        """
+        The position on the day a signal is formed must still be based on
+        the *previous* day's prediction — the 1-day shift is always applied
+        first, even for long holding periods.
+
+        With predictions = [0, 1, 0, ...], the signal is on day 1.
+        Position on day 1 = prediction[day 0] = 0  (not prediction[day 1]).
+        Position on day 2 = 1  (first day of exposure).
+        """
+        preds = _preds([0, 1, 0, 0, 0, 0, 0, 0])
+        close = _close([100.0] * 8)
+        result = run_backtest(preds, close, holding_period=5)
+
+        # Result starts at day 1.  position[day 1] must be 0 (signal day).
+        assert result["position"].iloc[0] == 0.0, (
+            "Position on signal day must be 0 — lookahead detected."
+        )
+        # position[day 2] must be 1 (first execution day).
+        assert result["position"].iloc[1] == 1.0, (
+            "Position on day after signal must be 1."
+        )
+
+    def test_overlapping_signals_do_not_exceed_position_of_one(self):
+        """
+        Consecutive signals must not stack into a position > 1.0.
+
+        With predictions = [1, 1, 1, 1, 1, 0, 0, 0, 0, 0] every day is a
+        new signal, yet the maximum position must stay at exactly 1.0.
+        This verifies that the rolling-max approach never creates leverage.
+        """
+        preds = _preds([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])
+        close = _close([100.0] * 10)
+        result = run_backtest(preds, close, holding_period=5)
+
+        assert result["position"].max() <= 1.0, (
+            "Overlapping signals must not push position above 1.0."
+        )
+        assert result["position"].min() >= 0.0, (
+            "Position must never be negative."
+        )
+
+    def test_invalid_holding_period_raises(self):
+        """holding_period < 1 must raise ValueError."""
+        preds = _preds([1, 0, 1])
+        close = _close([100.0, 101.0, 99.0])
+        with pytest.raises(ValueError, match="holding_period"):
+            run_backtest(preds, close, holding_period=0)

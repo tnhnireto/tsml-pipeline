@@ -109,6 +109,44 @@ def sma_ratio(close: pd.Series, short_window: int, long_window: int) -> pd.Serie
     return (short_sma / long_sma).rename(f"sma_ratio_{short_window}_{long_window}")
 
 
+def rolling_vol_ratio(
+    close: pd.Series, short_window: int, long_window: int
+) -> pd.Series:
+    """
+    Ratio of short-term realised volatility to long-term realised volatility.
+
+        ratio_t = rolling_vol(close, short) / rolling_vol(close, long)
+
+    > 1 means recent volatility is elevated relative to the longer baseline
+    (regime expansion).  < 1 means the market has been unusually quiet
+    recently (regime compression).
+
+    Both windows use ``rolling_volatility``, so the first ``long_window``
+    rows will be NaN.
+    """
+    if short_window >= long_window:
+        raise ValueError(
+            f"short_window ({short_window}) must be less than long_window ({long_window})."
+        )
+    short_vol = rolling_volatility(close, short_window)
+    long_vol  = rolling_volatility(close, long_window)
+    return (short_vol / long_vol).rename(f"vol_ratio_{short_window}_{long_window}")
+
+
+def price_vs_mean(close: pd.Series, window: int) -> pd.Series:
+    """
+    Distance of today's close from its rolling mean, as a fraction.
+
+        price_vs_mean_t = (close_t - SMA_t) / SMA_t
+
+    Positive values mean the price is above its recent average (potential
+    mean-reversion signal from above); negative values mean below.
+    The first ``window - 1`` rows are NaN.
+    """
+    mean = rolling_mean(close, window)
+    return ((close - mean) / mean).rename(f"price_vs_mean_{window}")
+
+
 def rsi(close: pd.Series, window: int = 14) -> pd.Series:
     """
     Relative Strength Index (RSI).

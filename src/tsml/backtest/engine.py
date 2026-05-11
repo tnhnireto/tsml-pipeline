@@ -9,27 +9,31 @@ A prediction made at the close of day t (using only data up to and
 including t) cannot influence a position until day t+1.  This is encoded
 with a single explicit shift:
 
-    position[t] = prediction[t-1]
+    shifted[t] = prediction[t-1]
 
-Then:
+For holding_period=1 (default):
 
-    strategy_return[t] = position[t] * asset_return[t]
-                       = prediction[t-1] * (close[t] - close[t-1]) / close[t-1]
+    position[t] = shifted[t] = prediction[t-1]
 
-This means:
-  - On Monday we observe the close and form a prediction.
-  - On Tuesday the market opens and we are positioned according to that prediction.
-  - We earn (or lose) Tuesday's return.
+For holding_period=N > 1:
 
-The first date in the result is always dropped because position[0] is NaN
-(there is no prediction before the first prediction date).
+    position[t] = max(shifted[t], shifted[t-1], ..., shifted[t-N+1])
+                = max(prediction[t-1], prediction[t-2], ..., prediction[t-N])
+
+A single long signal at day k therefore creates a position for days
+k+1, k+2, ..., k+N.  Overlapping signals (another signal before the first
+expires) extend the exposure but never push position above 1.0 because the
+rolling maximum of binary (0/1) inputs is always in {0, 1}.
+
+Transaction costs are applied on every day the *position* changes, regardless
+of holding period.
 
 Output columns
 --------------
 close           : asset close price
 asset_return    : daily return of the asset (buy-and-hold benchmark)
 prediction      : raw model output (0 or 1)
-position        : prediction shifted by 1 day (what we actually hold)
+position        : effective holding derived from predictions (see above)
 strategy_return : position * asset_return  (optionally minus costs)
 cumulative      : (1 + strategy_return).cumprod()  — strategy equity curve
 buy_and_hold    : (1 + asset_return).cumprod()     — passive benchmark
@@ -44,6 +48,7 @@ def run_backtest(
     predictions: pd.Series,
     close: pd.Series,
     costs_bps: float = 0.0,
+    holding_period: int = 1,
 ) -> pd.DataFrame:
     """
     Convert model predictions into a strategy performance DataFrame.
@@ -61,6 +66,18 @@ def run_backtest(
         Round-trip transaction cost in basis points, applied each time
         the position changes.  Default 0.0 (no costs).
         Example: costs_bps=10 means 0.10 % per trade.
+    holding_period:
+        Number of trading days to hold a long position after a signal.
+        Default 1 reproduces the original single-day behaviour exactly.
+
+        For holding_period=N, a prediction of 1 on day t creates a
+        position of 1 on days t+1 through t+N.  Overlapping signals
+        (new signal before the previous one expires) keep the position
+        at 1 — they never push it above 1.0.
+
+        The no-lookahead guarantee is preserved: positions are derived
+        from a 1-day shift of predictions before the rolling window is
+        applied, so signals are never executed on the day they are formed.
 
     Returns
     -------
@@ -72,8 +89,13 @@ def run_backtest(
     Raises
     ------
     ValueError
-        If predictions and close share no common dates.
+        If predictions and close share no common dates, or if
+        holding_period < 1.
     """
+    if holding_period < 1:
+        raise ValueError(
+            f"holding_period must be >= 1, got {holding_period}."
+        )
     # ------------------------------------------------------------------ #
     # 1. Align predictions and close on a common date range.              #
     #    We need close prices for one day BEFORE the first prediction     #
@@ -99,10 +121,31 @@ def run_backtest(
 
     # ------------------------------------------------------------------ #
     # 3. Build positions.                                                 #
-    #    position[t] = prediction[t-1]  ← the critical shift.            #
-    #    The first position is NaN because there is no prior prediction.  #
+    #                                                                     #
+    # Step A — shift by 1 day.                                           #
+    #   shifted[t] = prediction[t-1]                                     #
+    #   This is the no-lookahead guarantee: a signal formed at close of  #
+    #   day t cannot create a position until day t+1.                    #
+    #                                                                     #
+    # Step B — extend holding period (only when holding_period > 1).    #
+    #   position[t] = rolling_max(shifted, window=holding_period)[t]    #
+    #               = max(prediction[t-1], ..., prediction[t-N])         #
+    #   A single long signal therefore holds for N consecutive days.     #
+    #   Overlapping signals keep the position at 1 (rolling max of 0/1  #
+    #   binary inputs is always in {0, 1}, so no leverage is created).  #
     # ------------------------------------------------------------------ #
-    position = preds.shift(1).rename("position")
+    shifted = preds.shift(1)
+
+    if holding_period == 1:
+        position = shifted.rename("position")
+    else:
+        position = (
+            shifted
+            .rolling(window=holding_period, min_periods=1)
+            .max()
+            .clip(upper=1.0)
+            .rename("position")
+        )
 
     # ------------------------------------------------------------------ #
     # 4. Compute strategy returns.                                        #

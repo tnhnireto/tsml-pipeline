@@ -177,6 +177,54 @@ distributed across the full range, not concentrated at the tails.
 produces volatile estimates.  Any single result from a short window should
 be treated with caution.
 
+---
+
+## Experiment summary
+
+The experiment was extended to compare three target and holding-period
+configurations across five symbols (SPY, QQQ, MSFT, NVDA, GOOGL) and three
+date ranges, producing 15 symbol/period groups.
+
+**Configurations tested:**
+
+| Config | Target | Holding period | Description |
+|---|---|---|---|
+| `dir/hp1` | `direction` | 1 day | Next-day binary direction, hold 1 day |
+| `5d/hp5` | `direction_5d` | 5 days | 5-day forward direction, hold 5 days |
+| `thr/hp1` | `threshold` | 1 day | High-conviction days only (\|return\| > 0.5%), hold 1 day |
+
+**Headline result:**
+
+Across 15 symbol/period groups, a trained model beat AlwaysLong on Sharpe in
+**10 of 15 groups**.  AlwaysLong remained the best strategy in the remaining 5
+groups — all of which were long-trend periods where passive market drift
+dominates any active signal.
+
+**The threshold target was the strongest configuration overall**, winning in 7
+of the 10 trained-model wins.  Training exclusively on high-conviction days
+— where the next-day return exceeds 0.5 % in magnitude — appears to produce a
+cleaner decision boundary than training on every daily observation.  Neutral,
+low-signal days add label noise without contributing predictive value.
+
+**CalibratedLogisticRegression tended to win in stable trend regimes** (e.g.
+MSFT 2015–2023: Sharpe 1.87, total return +227%).  Platt scaling reduces
+unnecessary trades, and the model is well-suited to periods where the signal
+is persistent and costs compound quickly.
+
+**RandomForest tended to win in volatile and high-momentum regimes** (e.g.
+QQQ 2022–2023: Sharpe 3.20; NVDA 2022–2023: Sharpe 3.00).  However, it
+consistently carries higher turnover (30–43% of days), which makes its
+advantage sensitive to transaction cost assumptions and unlikely to persist
+under realistic execution.
+
+**These results should be interpreted with caution.**  The winning
+configurations were identified in hindsight across a limited set of assets and
+periods.  Non-stationarity means that a configuration that worked well in
+2015–2023 may not hold in the next period.  The findings are evidence that
+target design and regime sensitivity matter, not proof of a durable edge.
+
+---
+
 ### NVDA 2020–2023 equity curves
 
 Note: The plotted period begins after the initial training window required for walk-forward validation.
