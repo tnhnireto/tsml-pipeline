@@ -1,14 +1,16 @@
 """
 Reporting — equity curve plots.
 
-`plot_equity_curves` is the main entry point.  It accepts the dict of
-backtest DataFrames produced by `run_backtest`, draws one cumulative
-equity line per strategy, overlays the shared buy-and-hold benchmark,
-and saves the figure to disk.
+Functions
+---------
+plot_equity_curves
+    Plot cumulative equity curves from ``run_backtest`` results (single-asset,
+    multi-strategy comparison).
 
-Expected DataFrame columns (from `run_backtest`):
-    cumulative   : (1 + strategy_return).cumprod()
-    buy_and_hold : (1 + asset_return).cumprod()
+plot_portfolio_vs_benchmark
+    Plot a portfolio equity curve against a benchmark price series, both
+    normalised to 1.0 at the shared start date.  Intended for use with the
+    multi-asset ``simulate()`` output.
 
 Example
 -------
@@ -18,6 +20,11 @@ Example
 ...     "RandomForest": bt_rf,
 ... }
 >>> plot_equity_curves(results, title="NVDA 2020-2023", output_path="reports/nvda.png")
+>>>
+>>> plot_portfolio_vs_benchmark(
+...     result.equity_curve, spy_df["close"],
+...     title="Portfolio vs SPY", output_path="reports/portfolio.png",
+... )
 """
 
 from __future__ import annotations
@@ -125,6 +132,101 @@ def plot_equity_curves(
     ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
     ax.set_xlabel("Date", fontsize=10)
     ax.set_ylabel("Cumulative Return (1 = starting value)", fontsize=10)
+    ax.legend(fontsize=9, framealpha=0.9)
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return output_path.resolve()
+
+
+def plot_portfolio_vs_benchmark(
+    equity_curve: pd.Series,
+    benchmark_close: pd.Series,
+    title: str,
+    output_path: str | Path,
+    *,
+    strategy_label: str = "Portfolio",
+    benchmark_label: str = "SPY",
+) -> Path:
+    """
+    Plot a portfolio equity curve vs a benchmark, normalised to 1.0 at start.
+
+    Both series are aligned by inner join on their shared dates and then
+    normalised to start at 1.0, so they can be compared on the same scale
+    regardless of their absolute values.
+
+    Parameters
+    ----------
+    equity_curve:
+        Daily portfolio value series (e.g. ``SimulationResult.equity_curve``).
+        Must have a ``DatetimeIndex``.
+    benchmark_close:
+        Benchmark close price series (e.g. SPY from ``YFinanceLoader``).
+        Must have a ``DatetimeIndex``.
+    title:
+        Figure title.
+    output_path:
+        Destination PNG file path.  Parent directories are created automatically.
+    strategy_label:
+        Legend label for the portfolio line.
+    benchmark_label:
+        Legend label for the benchmark line.
+
+    Returns
+    -------
+    Path
+        Resolved absolute path of the saved PNG.
+
+    Raises
+    ------
+    ValueError
+        If ``equity_curve`` and ``benchmark_close`` share no common dates.
+    """
+    common = equity_curve.index.intersection(benchmark_close.index)
+    if common.empty:
+        raise ValueError(
+            "equity_curve and benchmark_close share no common dates. "
+            "Check that both cover the same period."
+        )
+
+    strat = equity_curve.loc[common].sort_index()
+    bench = benchmark_close.loc[common].sort_index()
+
+    # Normalise both to 1.0 at the shared start date.
+    strat_norm = strat / strat.iloc[0]
+    bench_norm = bench / bench.iloc[0]
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+
+    ax.plot(
+        bench_norm.index,
+        bench_norm.values,
+        color=_BNH_COLOUR,
+        linewidth=1.5,
+        linestyle="--",
+        label=f"{benchmark_label}  ({bench_norm.iloc[-1] - 1:+.1%})",
+        zorder=2,
+    )
+    ax.plot(
+        strat_norm.index,
+        strat_norm.values,
+        color=_STRATEGY_COLOURS[0],
+        linewidth=1.8,
+        label=f"{strategy_label}  ({strat_norm.iloc[-1] - 1:+.1%})",
+        zorder=3,
+    )
+
+    ax.axhline(1.0, color="black", linewidth=0.6, linestyle=":", alpha=0.5)
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+    ax.set_xlabel("Date", fontsize=10)
+    ax.set_ylabel("Normalised Value (1 = start)", fontsize=10)
     ax.legend(fontsize=9, framealpha=0.9)
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     ax.spines[["top", "right"]].set_visible(False)
