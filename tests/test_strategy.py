@@ -214,6 +214,127 @@ class TestValidation:
         with pytest.raises(ValueError, match="min_score"):
             generate_signals(df, current_positions=set(), min_score=-0.01)
 
+    def test_min_score_downtrend_above_1_raises(self):
+        df = _ranking(("A", 0.8))
+        with pytest.raises(ValueError, match="min_score_downtrend"):
+            generate_signals(df, current_positions=set(), min_score_downtrend=1.1)
+
+    def test_min_score_downtrend_below_min_score_raises(self):
+        """Downtrend threshold must be at least as strict as the base threshold."""
+        df = _ranking(("A", 0.8))
+        with pytest.raises(ValueError, match="min_score_downtrend"):
+            generate_signals(df, current_positions=set(), min_score=0.55, min_score_downtrend=0.50)
+
+
+# ---------------------------------------------------------------------------
+# Risk filter — downtrend guard
+# ---------------------------------------------------------------------------
+
+def _ranking_with_sma(*rows: tuple[str, float, bool | None]) -> pd.DataFrame:
+    """Build a ranking DataFrame that includes above_sma_200."""
+    return pd.DataFrame(rows, columns=["symbol", "score", "above_sma_200"])
+
+
+class TestDowntrendFilter:
+    def test_below_sma200_and_low_score_is_blocked(self):
+        df = _ranking_with_sma(("A", 0.90, True), ("B", 0.58, False))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=2, min_score=0.55, min_score_downtrend=0.62)
+        acts = _actions(signals)
+        assert acts["B"] == "blocked"
+
+    def test_below_sma200_but_high_enough_score_is_eligible(self):
+        """If score >= min_score_downtrend the symbol can still be bought."""
+        df = _ranking_with_sma(("A", 0.65, False))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        acts = _actions(signals)
+        assert acts["A"] == "buy"
+
+    def test_above_sma200_ignores_downtrend_threshold(self):
+        df = _ranking_with_sma(("A", 0.58, True))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        acts = _actions(signals)
+        assert acts["A"] == "buy"
+
+    def test_none_sma200_ignores_downtrend_threshold(self):
+        """Unknown SMA status → no penalty."""
+        df = _ranking_with_sma(("A", 0.58, None))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        acts = _actions(signals)
+        assert acts["A"] == "buy"
+
+    def test_no_sma_column_no_blocking(self):
+        """Backward compat: ranking without above_sma_200 never blocks."""
+        df = _ranking(("A", 0.58), ("B", 0.57))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=2, min_score=0.55, min_score_downtrend=0.62)
+        acts = _actions(signals)
+        assert acts["A"] == "buy"
+        assert acts["B"] == "buy"
+
+    def test_blocked_symbol_has_reason_string(self):
+        df = _ranking_with_sma(("A", 0.58, False))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        blocked = next(s for s in signals if s.symbol == "A")
+        assert blocked.action == "blocked"
+        assert "SMA200" in blocked.reason
+        assert "0.62" in blocked.reason
+
+    def test_held_blocked_symbol_becomes_sell_with_reason(self):
+        """A position that becomes blocked must be exited."""
+        df = _ranking_with_sma(("A", 0.58, False))
+        signals = generate_signals(df, current_positions={"A"},
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        sell = next(s for s in signals if s.symbol == "A")
+        assert sell.action == "sell"
+        assert "SMA200" in sell.reason
+
+    def test_blocked_not_counted_toward_top_n(self):
+        """Blocking a symbol should allow the next-ranked eligible one to fill the slot."""
+        df = _ranking_with_sma(
+            ("A", 0.90, True),    # eligible rank 1
+            ("B", 0.75, False),   # blocked (0.75 >= 0.62 so NOT blocked — this is eligible)
+            ("C", 0.58, False),   # blocked (0.58 < 0.62)
+            ("D", 0.57, True),    # eligible rank 3
+        )
+        # With top_n=2 and B eligible: target = {A, B}
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=2, min_score=0.55, min_score_downtrend=0.62)
+        acts = _actions(signals)
+        assert acts["A"] == "buy"
+        assert acts["B"] == "buy"
+        assert acts["C"] == "blocked"
+        assert "D" not in acts
+
+    def test_blocked_symbol_below_min_score_not_in_output(self):
+        """A symbol below min_score is invisible regardless of SMA status."""
+        df = _ranking_with_sma(("A", 0.50, False))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        assert not signals
+
+    def test_blocked_appears_after_sells_in_output(self):
+        df = _ranking_with_sma(
+            ("A", 0.90, True),
+            ("B", 0.58, False),   # blocked
+        )
+        signals = generate_signals(df, current_positions={"C"},
+                                   top_n=1, min_score=0.55, min_score_downtrend=0.62)
+        action_order = [s.action for s in signals]
+        if "sell" in action_order and "blocked" in action_order:
+            assert action_order.index("sell") < action_order.index("blocked")
+
+    def test_normal_buy_has_empty_reason(self):
+        df = _ranking_with_sma(("A", 0.80, True))
+        signals = generate_signals(df, current_positions=set(),
+                                   top_n=1, min_score=0.55)
+        assert signals[0].action == "buy"
+        assert signals[0].reason == ""
+
 
 # ---------------------------------------------------------------------------
 # SignalAction frozen dataclass
@@ -221,7 +342,7 @@ class TestValidation:
 
 class TestSignalAction:
     def test_valid_actions_accepted(self):
-        for action in ("buy", "sell", "hold"):
+        for action in ("buy", "sell", "hold", "blocked"):
             sa = SignalAction("X", action, 0.6)
             assert sa.action == action
 
@@ -233,3 +354,11 @@ class TestSignalAction:
         sa = SignalAction("X", "buy", 0.6)
         with pytest.raises(Exception):
             sa.action = "sell"  # type: ignore[misc]
+
+    def test_reason_defaults_to_empty_string(self):
+        sa = SignalAction("X", "buy", 0.6)
+        assert sa.reason == ""
+
+    def test_reason_can_be_set(self):
+        sa = SignalAction("X", "blocked", 0.58, "blocked: below SMA200")
+        assert "SMA200" in sa.reason
