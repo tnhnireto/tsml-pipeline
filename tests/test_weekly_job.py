@@ -187,6 +187,27 @@ class TestRunStep:
         wj.run_step(wj.STEPS[0], buf)
         assert "boom" in buf.getvalue()
 
+    def test_run_step_success_stdout_is_ascii_safe(self, wj, monkeypatch, capsys):
+        """
+        Console output from a successful run_step must be encodable as ASCII.
+        This guards against UnicodeEncodeError on Windows cp1252 terminals.
+        """
+        monkeypatch.setattr(wj.subprocess, "run", _mock_run_factory())
+        buf = io.StringIO()
+        wj.run_step(wj.STEPS[0], buf)
+        out = capsys.readouterr().out
+        out.encode("ascii")   # raises UnicodeEncodeError if any non-ASCII remains
+
+    def test_run_step_failure_stdout_is_ascii_safe(self, wj, monkeypatch, capsys):
+        """
+        Console output from a failing run_step must also be ASCII-safe.
+        """
+        monkeypatch.setattr(wj.subprocess, "run", _mock_run_factory(fail_at=0))
+        buf = io.StringIO()
+        wj.run_step(wj.STEPS[0], buf)
+        out = capsys.readouterr().out
+        out.encode("ascii")
+
 
 # ===========================================================================
 # 3. Environment validation
@@ -316,6 +337,36 @@ class TestMain:
         monkeypatch.setattr(wj.subprocess, "run", mock)
         wj.main()
         assert len(mock.calls) == len(wj.STEPS)
+
+    def test_full_success_console_output_is_ascii_safe(self, wj, monkeypatch, valid_env, capsys):
+        """
+        The complete console output of a successful weekly job run must
+        contain no non-ASCII characters (Windows cp1252 / ASCII safety).
+        """
+        monkeypatch.setattr(wj.subprocess, "run", _mock_run_factory())
+        wj.main()
+        out, err = capsys.readouterr()
+        (out + err).encode("ascii")
+
+    def test_full_failure_console_output_is_ascii_safe(self, wj, monkeypatch, valid_env, capsys):
+        """
+        Even when a step fails, the summary output must be ASCII-only.
+        """
+        monkeypatch.setattr(wj.subprocess, "run", _mock_run_factory(fail_at=1))
+        wj.main()
+        out, err = capsys.readouterr()
+        (out + err).encode("ascii")
+
+    def test_validation_failure_console_output_is_ascii_safe(self, wj, monkeypatch, tmp_path, capsys):
+        """
+        The environment-check error message must be ASCII-only.
+        """
+        monkeypatch.setattr(wj, "PROJECT_ROOT", tmp_path)
+        monkeypatch.delenv("ETORO_API_KEY", raising=False)
+        monkeypatch.setattr(wj.sys, "prefix", sys.base_prefix)
+        wj.main()
+        out, err = capsys.readouterr()
+        (out + err).encode("ascii")
 
 
 # ===========================================================================

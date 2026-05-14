@@ -80,8 +80,19 @@ def load_all_signals() -> pd.DataFrame:
     frames = [pd.read_csv(f) for f in files]
     df = pd.concat(frames, ignore_index=True)
 
-    # Parse date → UTC Timestamp (matches the UTC index in YFinanceLoader)
-    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize("UTC")
+    # Parse date → UTC Timestamp (matches the UTC index in YFinanceLoader).
+    #
+    # format="mixed" lets pandas detect the format per-element, which is
+    # required when older CSV files contain plain "YYYY-MM-DD" strings while
+    # newer files contain full UTC timestamps ("2026-05-14 00:00:00+00:00").
+    # Without format="mixed", pandas infers the format from the first row and
+    # raises ValueError on any row that doesn't match that inferred format.
+    #
+    # utc=True normalises every parsed value to UTC, so the result is always
+    # a timezone-aware datetime64[ns, UTC] column regardless of input format.
+    # tz_localize is intentionally avoided because it raises TypeError when
+    # the string already carries timezone info.
+    df["date"] = pd.to_datetime(df["date"], format="mixed", utc=True)
 
     # Parse score
     df["score"] = pd.to_numeric(df["score"], errors="coerce")

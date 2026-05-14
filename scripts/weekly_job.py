@@ -124,7 +124,7 @@ def run_step(step: dict, log_fh: StringIO) -> bool:
             _log(log_fh, "[stderr]")
             _log(log_fh, result.stderr.rstrip())
         _log(log_fh, f"\n\u2714  {name}  SUCCESS")
-        print(f"  [{_utc_now()}]    \u2714  OK")
+        print(f"  [{_utc_now()}]    [OK]")
         return True
 
     except subprocess.CalledProcessError as exc:
@@ -133,7 +133,7 @@ def run_step(step: dict, log_fh: StringIO) -> bool:
         _log(log_fh, "[stderr]")
         _log(log_fh, (exc.stderr or "").rstrip())
         _log(log_fh, f"\n\u2718  {name}  FAILED  (exit {exc.returncode})")
-        print(f"  [{_utc_now()}]    \u2718  FAILED  (exit {exc.returncode})")
+        print(f"  [{_utc_now()}]    [X] FAILED  (exit {exc.returncode})")
         # Echo the last few stderr lines to the console for quick diagnosis.
         if exc.stderr:
             for line in exc.stderr.strip().splitlines()[-5:]:
@@ -202,7 +202,7 @@ def main() -> int:
     errors = _validate_environment()
     if errors:
         print()
-        print("Environment check failed — cannot start weekly job.")
+        print("Environment check failed -- cannot start weekly job.")
         for err in errors:
             print(f"  ERROR: {err}")
         print()
@@ -265,15 +265,15 @@ def _run_workflow(logs_dir: Path) -> int:
             if s["name"] not in {n for n, _ in results}
         ]
         print()
-        print("─" * 44)
+        print("-" * 44)
         print("  Summary")
-        print("─" * 44)
+        print("-" * 44)
         for name, ok in results:
-            tag = "\u2714 OK     " if ok else "\u2718 FAILED "
+            tag = "[OK]     " if ok else "[X] FAIL "
             print(f"  {tag}  {name}")
         for name in skipped:
-            print(f"  \u25cb SKIPPED  {name}")
-        print("─" * 44)
+            print(f"  [-] SKIPPED  {name}")
+        print("-" * 44)
         print(f"  {final}  [{finished_at}]")
         print(f"  Log: {log_path}")
         print()

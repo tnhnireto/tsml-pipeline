@@ -62,11 +62,11 @@ def _print_stats(stats: PortfolioStats) -> None:
     print()
     print("=" * 54)
     print("  Portfolio Performance")
-    print(f"  {stats.start_date.date()} \u2192 {stats.end_date.date()}  ({stats.n_days}d)")
+    print(f"  {stats.start_date.date()} -> {stats.end_date.date()}  ({stats.n_days}d)")
     print("=" * 54)
     header = f"  {'Metric':<{W}}{'Strategy':>12}{'Benchmark':>12}"
     print(header)
-    print("  " + "\u2500" * (len(header) - 2))
+    print("  " + "-" * (len(header) - 2))
     rows = [
         ("Total Return",  pct(stats.total_return),          pct(stats.benchmark_total_return)),
         ("CAGR",          pct(stats.cagr),                  pct(stats.benchmark_cagr)),
@@ -88,7 +88,7 @@ def _print_weekly_returns(wr: pd.Series, n_weeks: int = 8) -> None:
     tail = wr.tail(n_weeks)
     print()
     print(f"  Weekly Returns (last {len(tail)} weeks)")
-    print("  " + "\u2500" * 30)
+    print("  " + "-" * 30)
     for date, ret in tail.items():
         bar = _sparkbar(ret)
         sign = "+" if ret >= 0 else ""
@@ -100,7 +100,7 @@ def _sparkbar(ret: float, scale: float = 0.05) -> str:
     """Mini ASCII bar chart for a weekly return value."""
     n = int(abs(ret) / scale * 10)
     n = min(n, 20)
-    char = "\u2588" if ret >= 0 else "\u2591"
+    char = "#" if ret >= 0 else "."
     return char * n
 
 
@@ -113,9 +113,9 @@ def _print_positions_snapshot(history: PortfolioHistory) -> None:
 
     print()
     print("  Current Positions")
-    print("  " + "\u2500" * 36)
+    print("  " + "-" * 36)
     if open_pos.empty:
-        print("  (no open positions — fully in cash)")
+        print("  (no open positions -- fully in cash)")
     else:
         for sym, shares in open_pos.items():
             pct_of_port = shares  # shares, not pct — we'd need price to show %
@@ -185,7 +185,7 @@ def main() -> None:
     start_date = args.start or first_order_date
     end_date   = args.end   or pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
 
-    print(f"Date range: {start_date} \u2192 {end_date}")
+    print(f"Date range: {start_date} -> {end_date}")
 
     # ── 3. Fetch prices ─────────────────────────────────────────────────────
     loader = YFinanceLoader(cache_dir="data/raw")
@@ -216,7 +216,7 @@ def main() -> None:
     )
 
     if history.equity_curve.empty:
-        print("Equity curve is empty — no tradeable orders in the date range.",
+        print("Equity curve is empty -- no tradeable orders in the date range.",
               file=sys.stderr)
         sys.exit(1)
 
@@ -233,7 +233,7 @@ def main() -> None:
         except ValueError as exc:
             print(f"  [warn] could not compute benchmark stats: {exc}", file=sys.stderr)
     else:
-        print("  (benchmark data unavailable — skipping benchmark comparison)")
+        print("  (benchmark data unavailable -- skipping benchmark comparison)")
 
     # ── 6. Weekly returns ───────────────────────────────────────────────────
     wr = weekly_returns(history.equity_curve)
@@ -249,12 +249,12 @@ def main() -> None:
             out = plot_portfolio_vs_benchmark(
                 history.equity_curve,
                 bench_close,
-                title=f"Portfolio vs {args.benchmark}  ({start_date} \u2013 {end_date})",
+                title=f"Portfolio vs {args.benchmark}  ({start_date} to {end_date})",
                 output_path=args.output,
                 strategy_label="Portfolio",
                 benchmark_label=args.benchmark,
             )
-            print(f"Plot saved \u2192 {out}")
+            print(f"Plot saved -> {out}")
         except Exception as exc:  # noqa: BLE001
             print(f"  [warn] plot failed: {exc}", file=sys.stderr)
 
