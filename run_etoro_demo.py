@@ -55,6 +55,7 @@ from tsml.broker.execution import (
     signals_to_proposed_orders,
 )
 from tsml.broker.risk import RiskConfig
+from tsml.portfolio.state import STATE_PATH, PortfolioState, apply_orders, load_state, save_state
 from tsml.portfolio.strategy import SignalAction
 
 # ===========================================================================
@@ -184,18 +185,23 @@ def _df_to_signal_actions(df: pd.DataFrame) -> list[SignalAction]:
     return actions
 
 
-def _stub_account(df: pd.DataFrame) -> tuple[float, float, list[str]]:
+def _account_from_state(state: PortfolioState) -> tuple[float, float, list[str]]:
     """
-    Return placeholder account figures for dry-run mode.
+    Derive account figures from local portfolio state for dry-run mode.
 
-    In dry-run, we cannot call the broker API, so we use a notional
-    $10,000 demo account with no open positions.  Replace this with
-    actual API calls (client.get_account(), client.get_positions())
-    when --execute is used.
+    In dry-run we cannot query the broker API, so account values come from
+    the persisted ``data/portfolio_state.json``.  On first run (no state
+    file) this returns a notional $10,000 account with no open positions.
+
+    ``balance`` is approximated as ``cash`` only; equity is not included
+    because share prices are not queried here.
+
+    When ``--execute`` is passed, replace this with live API calls:
+      ``client.get_account()`` and ``client.get_positions()``.
     """
-    balance   = 10_000.0
-    cash      = 10_000.0
-    positions = []   # no current holdings assumed in dry-run
+    balance   = state.cash
+    cash      = state.cash
+    positions = list(state.positions.keys())
     return balance, cash, positions
 
 
@@ -223,6 +229,16 @@ def main() -> None:
             "Without this flag the script prints the plan only."
         ),
     )
+    parser.add_argument(
+        "--commit-state",
+        action="store_true",
+        dest="commit_state",
+        help=(
+            "Update data/portfolio_state.json as if approved orders were filled.  "
+            "Safe to use with dry-run for local paper-trading tracking.  "
+            "Does NOT submit any real orders -- use --execute for that."
+        ),
+    )
     args = parser.parse_args()
 
     dry_run = not args.execute
@@ -231,16 +247,20 @@ def main() -> None:
 
     print(_SEP2)
     print("  eToro demo order execution")
+    print("  Execution mode: latest dated signal file only")
     print(_SEP2)
-    print(f"  Mode     : {'DRY-RUN (no orders submitted)' if dry_run else 'EXECUTE (demo account)'}")
-    print(f"  API mode : {os.environ.get('ETORO_ACCOUNT_MODE', 'demo')}")
+    print(f"  Mode         : {'DRY-RUN (no orders submitted)' if dry_run else 'EXECUTE (demo account)'}")
+    print(f"  Commit state : {'yes -- portfolio_state.json will be updated' if args.commit_state else 'no (default)'}")
+    print(f"  API mode     : {os.environ.get('ETORO_ACCOUNT_MODE', 'demo')}")
     print(_SEP2)
     print()
 
     # ── Load signals ────────────────────────────────────────────────────
     df, signal_file = _load_latest_signals(SIGNALS_DIR)
+    signal_date = pd.to_datetime(df["date"].iloc[0]).strftime("%Y-%m-%d")
+
     print(f"Signal file : {signal_file}")
-    print(f"Signal date : {df['date'].iloc[0]}")
+    print(f"Signal date : {signal_date}")
     print(f"Total rows  : {len(df)}")
     print()
 
@@ -249,12 +269,14 @@ def main() -> None:
     sells   = [s for s in signals if s.action == "sell"]
     print(
         f"Actions from file: {len(buys)} BUY  |  {len(sells)} SELL  |  "
-        f"{sum(1 for s in signals if s.action == 'hold')} HOLD  |  "
-        f"{sum(1 for s in signals if s.action == 'blocked')} BLOCKED"
+        f"{sum(1 for s in signals if s.action == 'hold')} HOLD"
     )
     print()
 
-    # ── Get account state ───────────────────────────────────────────────
+    # ── Load portfolio state ─────────────────────────────────────────────
+    state = load_state(STATE_PATH)
+
+    # ── Get account figures ──────────────────────────────────────────────
     client = None
 
     if not dry_run:
@@ -270,12 +292,13 @@ def main() -> None:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
     else:
-        balance, cash, open_positions = _stub_account(df)
+        balance, cash, open_positions = _account_from_state(state)
         print(
-            f"Account   : (stub) balance=${balance:,.2f}  "
-            f"cash=${cash:,.2f}  positions={open_positions}"
+            f"Account   : (state) balance=${balance:,.2f}  "
+            f"cash=${cash:,.2f}  positions={open_positions or '(none)'}"
         )
-        print("           (dry-run: using placeholder account values)")
+        if state.last_rebalance_date:
+            print(f"           Last rebalance: {state.last_rebalance_date}")
     print()
 
     # ── Build proposed orders ───────────────────────────────────────────
@@ -301,16 +324,25 @@ def main() -> None:
     elif not dry_run:
         print("WARNING: --execute passed but no client available.", file=sys.stderr)
     else:
-        print(
-            "Dry-run complete.  Pass --execute to submit orders to the demo account.\n"
-            "Make sure ETORO_API_KEY is set and all TODO endpoint paths in\n"
-            "src/tsml/broker/etoro_client.py are verified first."
-        )
+        hints = ["Pass --execute to submit orders to the demo account."]
+        if not args.commit_state:
+            hints.append("Pass --commit-state to update portfolio_state.json for paper tracking.")
+        print("Dry-run complete.  " + "  ".join(hints))
 
-    # ── Log orders ───────────────────────────────────────────────────────
+    # ── Log orders ────────────────────────────────────────────────────────
     if plan.all_records:
-        log_path = log_orders(plan, dry_run=dry_run)
+        log_path = log_orders(plan, dry_run=dry_run, signal_date=signal_date)
         print(f"\nOrder log written: {log_path}")
+
+    # ── Commit state (paper trading) ─────────────────────────────────────
+    if args.commit_state:
+        new_state = apply_orders(state, plan.approved, signal_date=signal_date)
+        save_state(new_state, STATE_PATH)
+        print()
+        print(f"Portfolio state committed: {STATE_PATH}")
+        print(f"  Date      : {signal_date}")
+        print(f"  Positions : {sorted(new_state.positions.keys()) or '(none)'}")
+        print(f"  Cash      : ${new_state.cash:,.2f}  (approx; SELL amounts not tracked)")
 
 
 if __name__ == "__main__":

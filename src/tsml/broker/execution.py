@@ -221,25 +221,103 @@ def execute_plan(
 # Step 4: order logging
 # ---------------------------------------------------------------------------
 
-def log_orders(plan: ExecutionPlan, dry_run: bool) -> Path:
+def _make_order_id(date_str: str, symbol: str, side: str) -> str:
     """
-    Append all order records in ``plan`` to a JSONL file under ``logs/orders/``.
+    Return a stable, human-readable order identifier.
 
-    The filename is ``YYYY-MM-DD.jsonl`` using the UTC date of plan generation.
-    Each line is one JSON object.  API keys and secrets are never written.
+    Format: ``YYYY-MM-DD:SYMBOL:SIDE``  e.g. ``2026-05-14:AAPL:BUY``
 
-    Returns the path of the log file written.
+    The same signal file + symbol + side combination always produces the
+    same ``order_id``, which is the key property used by :func:`log_orders`
+    to skip duplicate entries.
+    """
+    return f"{date_str}:{symbol}:{side}"
+
+
+def _load_existing_order_ids(log_path: Path) -> set[str]:
+    """
+    Return the set of ``order_id`` values already written to *log_path*.
+
+    Returns an empty set if the file does not exist or cannot be read.
+    Lines that are not valid JSON are silently skipped.
+    """
+    if not log_path.exists():
+        return set()
+    ids: set[str] = set()
+    try:
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            oid = entry.get("order_id")
+            if oid:
+                ids.add(str(oid))
+    except OSError:
+        pass
+    return ids
+
+
+def log_orders(
+    plan: ExecutionPlan,
+    dry_run: bool,
+    signal_date: str | None = None,
+) -> Path:
+    """
+    Append order records from *plan* to a JSONL file under ``logs/orders/``.
+
+    Idempotency
+    -----------
+    Each record is assigned a stable ``order_id`` of the form
+    ``YYYY-MM-DD:SYMBOL:SIDE``.  Before writing, the function loads all
+    existing ``order_id`` values from the target file.  Any record whose
+    ``order_id`` is already present is skipped with a short message, so
+    re-running the same plan (e.g. after a script restart) does not produce
+    duplicate JSONL lines.
+
+    Parameters
+    ----------
+    plan:
+        The ``ExecutionPlan`` to log.
+    dry_run:
+        Whether this was a dry-run invocation (stored in each record).
+    signal_date:
+        ISO date string (``YYYY-MM-DD``) of the source signal file.  When
+        provided, it is used as the date component of ``order_id`` and the
+        log filename.  Falls back to the UTC date of ``plan.generated_at``
+        when not provided.
+
+    Returns
+    -------
+    Path
+        The path of the JSONL file written to.
     """
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    date_str  = plan.generated_at[:10]   # "YYYY-MM-DD"
-    log_path  = LOGS_DIR / f"{date_str}.jsonl"
+    date_str = signal_date if signal_date else plan.generated_at[:10]
+    log_path = LOGS_DIR / f"{date_str}.jsonl"
+
+    existing_ids = _load_existing_order_ids(log_path)
 
     with log_path.open("a", encoding="utf-8") as fh:
         for record in plan.all_records:
-            o = record.order
+            o        = record.order
+            order_id = _make_order_id(date_str, o.symbol, o.side)
+
+            if order_id in existing_ids:
+                print(
+                    f"  [log_orders] Skipping duplicate order_id: {order_id}",
+                    file=sys.stderr,
+                )
+                continue
+
             entry = {
+                "order_id":      order_id,
                 "timestamp":     plan.generated_at,
+                "signal_date":   date_str,
                 "dry_run":       dry_run,
                 "type":          "approved" if record.approved else "rejected",
                 "symbol":        o.symbol,
@@ -260,6 +338,7 @@ def log_orders(plan: ExecutionPlan, dry_run: bool) -> Path:
                 ),
             }
             fh.write(json.dumps(entry) + "\n")
+            existing_ids.add(order_id)   # prevent intra-batch duplicates
 
     return log_path
 

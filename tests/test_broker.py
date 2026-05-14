@@ -334,3 +334,94 @@ class TestOrderLogging:
             entry = json.loads(line)
             assert "symbol" in entry
             assert entry["dry_run"] is True
+
+
+class TestIdempotentLogging:
+    """Idempotency: rerunning log_orders with the same plan must not duplicate entries."""
+
+    def _make_plan(self, symbols: list[str]) -> ExecutionPlan:
+        from tsml.broker.execution import OrderRecord
+        plan = ExecutionPlan(account_balance=10_000.0, cash_before=10_000.0)
+        for sym in symbols:
+            plan.approved.append(
+                OrderRecord(
+                    order=ProposedOrder(sym, "BUY", 2_000.0),
+                    risk_result=RiskResult(approved=True),
+                )
+            )
+        return plan
+
+    def test_order_id_present_in_log_entry(self, tmp_path, monkeypatch):
+        import json
+        import tsml.broker.execution as exec_mod
+        monkeypatch.setattr(exec_mod, "LOGS_DIR", tmp_path)
+
+        plan     = self._make_plan(["AAPL"])
+        log_path = log_orders(plan, dry_run=True, signal_date="2026-05-14")
+        entry    = json.loads(log_path.read_text().strip())
+        assert "order_id" in entry
+        assert entry["order_id"] == "2026-05-14:AAPL:BUY"
+
+    def test_signal_date_in_log_entry(self, tmp_path, monkeypatch):
+        import json
+        import tsml.broker.execution as exec_mod
+        monkeypatch.setattr(exec_mod, "LOGS_DIR", tmp_path)
+
+        plan     = self._make_plan(["MSFT"])
+        log_path = log_orders(plan, dry_run=True, signal_date="2026-05-14")
+        entry    = json.loads(log_path.read_text().strip())
+        assert entry["signal_date"] == "2026-05-14"
+
+    def test_rerun_same_plan_does_not_duplicate_lines(self, tmp_path, monkeypatch):
+        import tsml.broker.execution as exec_mod
+        monkeypatch.setattr(exec_mod, "LOGS_DIR", tmp_path)
+
+        plan     = self._make_plan(["AAPL", "MSFT"])
+        log_path = log_orders(plan, dry_run=True, signal_date="2026-05-14")
+        # second run -- same plan, same signal_date
+        log_orders(plan, dry_run=True, signal_date="2026-05-14")
+
+        lines = [l for l in log_path.read_text().splitlines() if l.strip()]
+        assert len(lines) == 2, "Second run must not append duplicate lines"
+
+    def test_different_symbol_creates_new_entry(self, tmp_path, monkeypatch):
+        import tsml.broker.execution as exec_mod
+        monkeypatch.setattr(exec_mod, "LOGS_DIR", tmp_path)
+
+        plan1 = self._make_plan(["AAPL"])
+        plan2 = self._make_plan(["NVDA"])
+        log_path = log_orders(plan1, dry_run=True, signal_date="2026-05-14")
+        log_orders(plan2, dry_run=True, signal_date="2026-05-14")
+
+        lines = [l for l in log_path.read_text().splitlines() if l.strip()]
+        assert len(lines) == 2   # AAPL and NVDA are distinct
+
+    def test_duplicate_detection_works_for_pre_existing_file(self, tmp_path, monkeypatch):
+        """Idempotency holds even when the file already exists from a previous session."""
+        import json
+        import tsml.broker.execution as exec_mod
+        monkeypatch.setattr(exec_mod, "LOGS_DIR", tmp_path)
+
+        # First run: write AAPL entry to the file.
+        plan     = self._make_plan(["AAPL"])
+        log_path = log_orders(plan, dry_run=True, signal_date="2026-05-14")
+        count_before = len([l for l in log_path.read_text().splitlines() if l.strip()])
+
+        # Simulate script restart: log same plan again.
+        log_orders(plan, dry_run=True, signal_date="2026-05-14")
+        count_after = len([l for l in log_path.read_text().splitlines() if l.strip()])
+
+        assert count_before == count_after == 1
+
+    def test_same_symbol_different_date_creates_new_entry(self, tmp_path, monkeypatch):
+        import tsml.broker.execution as exec_mod
+        monkeypatch.setattr(exec_mod, "LOGS_DIR", tmp_path)
+
+        plan = self._make_plan(["AAPL"])
+        # Two different signal dates -> different filenames, both should have 1 entry.
+        path1 = log_orders(plan, dry_run=True, signal_date="2026-05-07")
+        path2 = log_orders(plan, dry_run=True, signal_date="2026-05-14")
+
+        assert path1 != path2
+        assert len([l for l in path1.read_text().splitlines() if l.strip()]) == 1
+        assert len([l for l in path2.read_text().splitlines() if l.strip()]) == 1

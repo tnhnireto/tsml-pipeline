@@ -319,6 +319,9 @@ def print_summaries(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    print("Analysis mode: historical signal aggregate")
+    print()
+
     loader = YFinanceLoader(cache_dir="data/raw")
 
     # ── Load ────────────────────────────────────────────────────────────

@@ -461,3 +461,79 @@ class TestFileLock:
         self._lock(valid_env).touch()
         wj.main()
         assert "already running" in capsys.readouterr().out.lower()
+
+
+# ===========================================================================
+# 6. TSML_COMMIT_STATE environment variable
+# ===========================================================================
+
+def _load_wj_with_env(monkeypatch, *, commit_state: str | None):
+    """
+    Load weekly_job fresh with TSML_COMMIT_STATE set (or removed) so that the
+    module-level ``TSML_COMMIT_STATE`` variable is evaluated with the correct
+    environment.  Returns the freshly loaded module.
+    """
+    import importlib
+    import importlib.util
+
+    if commit_state is None:
+        monkeypatch.delenv("TSML_COMMIT_STATE", raising=False)
+    else:
+        monkeypatch.setenv("TSML_COMMIT_STATE", commit_state)
+
+    spec = importlib.util.spec_from_file_location(
+        "weekly_job_fresh",
+        _SCRIPTS_DIR / "weekly_job.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestTsmlCommitState:
+    def test_commit_state_false_by_default(self, monkeypatch):
+        """TSML_COMMIT_STATE is False when env var is absent."""
+        mod = _load_wj_with_env(monkeypatch, commit_state=None)
+        assert mod.TSML_COMMIT_STATE is False
+
+    def test_commit_state_false_for_empty_string(self, monkeypatch):
+        mod = _load_wj_with_env(monkeypatch, commit_state="")
+        assert mod.TSML_COMMIT_STATE is False
+
+    def test_commit_state_false_for_zero(self, monkeypatch):
+        mod = _load_wj_with_env(monkeypatch, commit_state="0")
+        assert mod.TSML_COMMIT_STATE is False
+
+    def test_commit_state_true_when_one(self, monkeypatch):
+        """TSML_COMMIT_STATE is True when env var equals '1'."""
+        mod = _load_wj_with_env(monkeypatch, commit_state="1")
+        assert mod.TSML_COMMIT_STATE is True
+
+    def test_no_commit_state_flag_in_etoro_cmd_by_default(self, monkeypatch):
+        """Without TSML_COMMIT_STATE=1, --commit-state must not appear in the eToro cmd."""
+        mod  = _load_wj_with_env(monkeypatch, commit_state=None)
+        etoro_cmd = mod.STEPS[1]["cmd"]
+        assert "--commit-state" not in etoro_cmd
+
+    def test_commit_state_flag_present_when_env_one(self, monkeypatch):
+        """With TSML_COMMIT_STATE=1, --commit-state must appear in the eToro cmd."""
+        mod  = _load_wj_with_env(monkeypatch, commit_state="1")
+        etoro_cmd = mod.STEPS[1]["cmd"]
+        assert "--commit-state" in etoro_cmd
+
+    def test_execute_never_present_even_with_commit_state(self, monkeypatch):
+        """--execute must never appear regardless of TSML_COMMIT_STATE."""
+        mod = _load_wj_with_env(monkeypatch, commit_state="1")
+        for step in mod.STEPS:
+            assert "--execute" not in step["cmd"], (
+                f"--execute found in step '{step['name']}': {step['cmd']}"
+            )
+
+    def test_commit_state_not_in_other_steps(self, monkeypatch):
+        """--commit-state should only appear in the eToro step, not elsewhere."""
+        mod = _load_wj_with_env(monkeypatch, commit_state="1")
+        for step in mod.STEPS:
+            if "etoro" not in step["name"].lower():
+                assert "--commit-state" not in step["cmd"], (
+                    f"--commit-state unexpectedly in step '{step['name']}'"
+                )

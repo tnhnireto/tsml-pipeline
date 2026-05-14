@@ -35,6 +35,7 @@ from pathlib import Path
 from tsml.data_loader import YFinanceLoader
 from tsml.models.baselines import CalibratedLogisticRegressionModel
 from tsml.portfolio import enrich_with_context, generate_signals, rank_universe
+from tsml.portfolio.state import load_state
 from tsml.validation import WalkForwardSplit
 
 # ===========================================================================
@@ -63,9 +64,11 @@ MIN_SCORE:            float = 0.55   # base eligibility threshold
 MIN_SCORE_DOWNTREND:  float = 0.62   # stricter threshold when above_sma_200 is False
 TARGET:               str   = "threshold"   # high-conviction days only
 
-# Edit this to reflect actual open positions before each run.
-# Example:  CURRENT_POSITIONS = {"MSFT", "AAPL", "QQQ"}
-CURRENT_POSITIONS: set[str] = set()
+# Current open positions are loaded automatically from data/portfolio_state.json.
+# Run: python run_etoro_demo.py --commit-state  to update that file after a
+# dry-run.  On first run (no state file) this defaults to an empty set.
+_portfolio_state    = load_state()
+CURRENT_POSITIONS: set[str] = set(_portfolio_state.positions.keys())
 
 # ===========================================================================
 # FORMATTING HELPERS
@@ -289,6 +292,7 @@ if blocked_:
     print()
 
 print(
-    "Next step: execute the suggested trades, then update CURRENT_POSITIONS\n"
-    "           at the top of this file before the next weekly run."
+    "Next step: execute the suggested trades via run_etoro_demo.py, then run:\n"
+    "           python run_etoro_demo.py --commit-state\n"
+    "           to persist positions to data/portfolio_state.json."
 )

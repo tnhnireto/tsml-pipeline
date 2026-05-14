@@ -1,5 +1,6 @@
 from tsml.portfolio.ranker import enrich_with_context, rank_universe
 from tsml.portfolio.simulator import SimulationResult, simulate
+from tsml.portfolio.state import PortfolioState, apply_orders, load_state, save_state
 from tsml.portfolio.strategy import SignalAction, generate_signals
 from tsml.portfolio.tracker import (
     PortfolioHistory,
@@ -18,6 +19,10 @@ __all__ = [
     "SignalAction",
     "simulate",
     "SimulationResult",
+    "PortfolioState",
+    "load_state",
+    "save_state",
+    "apply_orders",
     "TradeRecord",
     "PortfolioHistory",
     "PortfolioStats",

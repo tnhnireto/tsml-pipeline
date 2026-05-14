@@ -50,9 +50,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 #   name  — label shown in the console summary and log
 #   cmd   — argv list passed to subprocess.run (relative paths, cwd=PROJECT_ROOT)
 #
-# IMPORTANT: --execute is deliberately absent from the eToro step.
+# IMPORTANT: --execute is NEVER passed to the eToro step.
 # This script must never submit real orders.
+#
+# TSML_COMMIT_STATE
+# -----------------
+# Set the environment variable TSML_COMMIT_STATE=1 to let the weekly job
+# update data/portfolio_state.json after the dry-run.  This enables local
+# paper-trading tracking without any real order submission.
+#
+#   TSML_COMMIT_STATE=1 python scripts/weekly_job.py
+#
+# Default (variable absent or any value other than "1") is no state mutation.
 # ---------------------------------------------------------------------------
+
+# Read once at startup so the STEPS list is built correctly even if the env
+# var is set mid-run by something else.
+TSML_COMMIT_STATE: bool = os.environ.get("TSML_COMMIT_STATE", "").strip() == "1"
+
+_etoro_cmd: list[str] = [sys.executable, "run_etoro_demo.py"]
+if TSML_COMMIT_STATE:
+    _etoro_cmd.append("--commit-state")
 
 STEPS: list[dict] = [
     {
@@ -61,7 +79,7 @@ STEPS: list[dict] = [
     },
     {
         "name": "eToro Demo (dry-run)",
-        "cmd":  [sys.executable, "run_etoro_demo.py"],
+        "cmd":  _etoro_cmd,
     },
     {
         "name": "Signal Analysis",
