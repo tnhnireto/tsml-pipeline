@@ -48,6 +48,7 @@ def default_config() -> RiskConfig:
 def demo_env(monkeypatch):
     """Set minimal environment for EtoroClient construction."""
     monkeypatch.setenv("ETORO_API_KEY", "test-key-abc123")
+    monkeypatch.setenv("ETORO_USER_KEY", "test-user-key-xyz")
     monkeypatch.setenv("ETORO_ACCOUNT_MODE", "demo")
 
 
@@ -117,6 +118,32 @@ class TestRiskRules:
         assert not result.approved
         assert result.rule == "max_trade_size"
 
+    def test_approves_amount_exactly_at_max_trade_limit(self, default_config):
+        order  = ProposedOrder("AAPL", "BUY", 2_000.0)   # exactly 20% of 10k
+        result = validate_order(order, default_config, 10_000.0, 9_000.0, [])
+        assert result.approved
+
+    def test_approves_amount_one_cent_above_limit_within_tolerance(self, default_config):
+        order  = ProposedOrder("AAPL", "BUY", 2_000.01)   # 20% + $0.01 of 10k
+        result = validate_order(order, default_config, 10_000.0, 9_000.0, [])
+        assert result.approved
+
+    def test_rejects_amount_materially_above_max_trade_limit(self, default_config):
+        order  = ProposedOrder("AAPL", "BUY", 2_000.02)   # 20% + $0.02 of 10k
+        result = validate_order(order, default_config, 10_000.0, 9_000.0, [])
+        assert not result.approved
+        assert result.rule == "max_trade_size"
+        assert "2,000.02" in result.reason
+        assert "2,000.00" in result.reason
+
+    def test_regression_float_drift_at_max_trade_limit(self, default_config):
+        """99307.54 * 0.20 rounds to 19861.51 — must not reject on float drift."""
+        balance = 99_307.54
+        amount  = 19_861.51
+        order   = ProposedOrder("AAPL", "BUY", amount)
+        result  = validate_order(order, default_config, balance, balance, [])
+        assert result.approved
+
     def test_rejects_insufficient_cash_buffer(self, default_config):
         """Buying when remaining cash would fall below 5% buffer."""
         # balance=10k, cash=600, buffer=5%=500, buying 200 → cash=400 < 500
@@ -149,35 +176,40 @@ class TestRiskRules:
 class TestEtoroClientConstruction:
     def test_missing_api_key_raises_broker_auth_error(self, monkeypatch):
         monkeypatch.delenv("ETORO_API_KEY", raising=False)
+        monkeypatch.setenv("ETORO_USER_KEY", "test-user")
         monkeypatch.setenv("ETORO_ACCOUNT_MODE", "demo")
         with pytest.raises(BrokerAuthError, match="ETORO_API_KEY"):
-            EtoroClient()
+            EtoroClient(cache_path=None)
 
     def test_empty_api_key_raises_broker_auth_error(self, monkeypatch):
         monkeypatch.setenv("ETORO_API_KEY", "   ")   # whitespace-only
+        monkeypatch.setenv("ETORO_USER_KEY", "test-user")
         monkeypatch.setenv("ETORO_ACCOUNT_MODE", "demo")
         with pytest.raises(BrokerAuthError):
-            EtoroClient()
+            EtoroClient(cache_path=None)
 
     def test_real_mode_raises_broker_mode_error(self, monkeypatch):
         monkeypatch.setenv("ETORO_API_KEY", "some-key")
+        monkeypatch.setenv("ETORO_USER_KEY", "some-user")
         monkeypatch.setenv("ETORO_ACCOUNT_MODE", "real")
         with pytest.raises(BrokerModeError, match="demo"):
-            EtoroClient()
+            EtoroClient(cache_path=None)
 
     def test_unknown_mode_raises_broker_mode_error(self, monkeypatch):
         monkeypatch.setenv("ETORO_API_KEY", "some-key")
+        monkeypatch.setenv("ETORO_USER_KEY", "some-user")
         monkeypatch.setenv("ETORO_ACCOUNT_MODE", "paper")
         with pytest.raises(BrokerModeError):
-            EtoroClient()
+            EtoroClient(cache_path=None)
 
     def test_valid_demo_env_constructs_successfully(self, demo_env):
-        client = EtoroClient()
+        client = EtoroClient(cache_path=None)
         assert client._mode == "demo"
 
     def test_api_key_not_exposed_in_repr(self, demo_env):
-        client = EtoroClient()
+        client = EtoroClient(cache_path=None)
         assert "test-key-abc123" not in repr(client)
+        assert "test-user-key-xyz" not in repr(client)
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +218,7 @@ class TestEtoroClientConstruction:
 
 class TestDryRun:
     def test_dry_run_place_order_does_not_call_http_post(self, demo_env):
-        client = EtoroClient()
+        client = EtoroClient(cache_path=None)
         with patch.object(client._session, "post") as mock_post:
             result = client.place_order("AAPL", "BUY", 500.0, dry_run=True)
         mock_post.assert_not_called()
@@ -195,7 +227,7 @@ class TestDryRun:
 
     def test_dry_run_place_order_does_not_call_http_get(self, demo_env):
         """place_order dry-run should not trigger any network call at all."""
-        client = EtoroClient()
+        client = EtoroClient(cache_path=None)
         with patch.object(client._session, "get") as mock_get, \
              patch.object(client._session, "post") as mock_post:
             client.place_order("MSFT", "BUY", 200.0, dry_run=True)
@@ -203,7 +235,7 @@ class TestDryRun:
         mock_post.assert_not_called()
 
     def test_dry_run_result_fields(self, demo_env):
-        client = EtoroClient()
+        client = EtoroClient(cache_path=None)
         result = client.place_order("NVDA", "SELL", 300.0, dry_run=True)
         assert result.symbol  == "NVDA"
         assert result.side    == "SELL"

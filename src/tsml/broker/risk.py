@@ -134,6 +134,10 @@ class ProposedOrder:
 # Validation
 # ---------------------------------------------------------------------------
 
+# Allow tiny float drift when comparing order amount to pct * balance.
+_MAX_TRADE_SIZE_TOLERANCE = 0.01   # USD
+
+
 def validate_order(
     order: ProposedOrder,
     config: RiskConfig,
@@ -203,12 +207,12 @@ def validate_order(
     # Rule 5: max trade size
     if account_balance > 0:
         max_allowed = config.max_trade_amount_pct * account_balance
-        if order.amount > max_allowed:
+        if order.amount > max_allowed + _MAX_TRADE_SIZE_TOLERANCE:
             return _reject(
                 "max_trade_size",
-                f"Order amount {order.amount:.2f} exceeds "
+                f"Order amount ${order.amount:,.2f} exceeds "
                 f"{config.max_trade_amount_pct * 100:.0f}% of account balance "
-                f"({max_allowed:.2f}).",
+                f"(limit ${max_allowed:,.2f}).",
             )
 
     # Rule 6: cash buffer (buy only — selling returns cash)

@@ -10,6 +10,11 @@ IMPORTANT
 - Only demo mode is supported.  Real trading is never initiated here.
 - Default behaviour is dry-run: no HTTP requests are sent unless
   ``--execute`` is passed AND the eToro API key is set.
+- When ``--execute`` is passed, broker reconciliation runs automatically
+  before any order is submitted.  If the local portfolio state diverges
+  from the broker's open positions, execution is aborted.  Correct the
+  discrepancy (using ``scripts/reconcile_broker.py`` to diagnose) before
+  retrying ``--execute``.
 - API key is read from the ``ETORO_API_KEY`` environment variable.
   Never hard-code credentials.
 - All eToro API endpoint paths in etoro_client.py are marked TODO and
@@ -27,11 +32,13 @@ Usage
 Environment variables
 ---------------------
 ETORO_API_KEY         Required for --execute.  Ignored in dry-run.
+ETORO_USER_KEY        Required for --execute (demo user key).  Ignored in dry-run.
 ETORO_ACCOUNT_MODE    Must be "demo" (default).
 
 Setup
 -----
     export ETORO_API_KEY=your_key_here
+    export ETORO_USER_KEY=your_user_key_here
     export ETORO_ACCOUNT_MODE=demo
     python run_etoro_demo.py --execute
 """
@@ -46,7 +53,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tsml.broker.base import BrokerAuthError, BrokerModeError
+from tsml.broker.base import BrokerAuthError, BrokerError, BrokerModeError
 from tsml.broker.execution import (
     build_execution_plan,
     execute_plan,
@@ -54,6 +61,7 @@ from tsml.broker.execution import (
     print_plan,
     signals_to_proposed_orders,
 )
+from tsml.broker.reconcile import format_report, reconcile
 from tsml.broker.risk import RiskConfig
 from tsml.portfolio.state import STATE_PATH, PortfolioState, apply_orders, load_state, save_state
 from tsml.portfolio.strategy import SignalAction
@@ -291,6 +299,33 @@ def main() -> None:
         except (BrokerAuthError, BrokerModeError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
+
+        # ── Reconciliation gate (required before any live order) ─────────
+        # Local portfolio state must match the broker's open positions.
+        # Any discrepancy aborts execution -- use scripts/reconcile_broker.py
+        # to diagnose and correct before retrying --execute.
+        print()
+        print("Reconciliation check (required before --execute) ...")
+        try:
+            recon_result = reconcile(state, client)
+        except BrokerError as exc:
+            print(f"ERROR: Reconciliation broker call failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        print(format_report(recon_result, state, state_path=STATE_PATH))
+
+        if not recon_result.overall_ok:
+            print(
+                "ERROR: Broker reconciliation failed.  "
+                "Correct the discrepancy and retry --execute.  "
+                "Run: python scripts/reconcile_broker.py  for details.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        print("Reconciliation passed.  Proceeding to order execution.")
+        print()
+
     else:
         balance, cash, open_positions = _account_from_state(state)
         print(

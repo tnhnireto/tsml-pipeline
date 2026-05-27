@@ -335,3 +335,157 @@ class TestBlockedNeverProposed:
             assert blocked not in order_symbols, (
                 f"{blocked} was blocked but appeared in proposed orders"
             )
+
+
+# ===========================================================================
+# 5. Reconciliation gate in main()
+# ===========================================================================
+
+class TestReconciliationGate:
+    """
+    Verify that:
+    - dry-run never calls reconcile()
+    - --execute always calls reconcile() before any order
+    - failed reconciliation prevents execute_plan() from being called
+    - passed reconciliation allows execute_plan() to proceed
+    """
+
+    _CSV_ROW = (
+        "date,symbol,score,action,reason,"
+        "return_20d,return_60d,volatility_20d,price_vs_sma_200,above_sma_200\n"
+        "2026-05-27,AAPL,0.65,buy,,0.0,0.0,0.1,0.0,True\n"
+    )
+
+    def _write_signal(self, tmp_path: Path) -> Path:
+        sig_dir = tmp_path / "signals"
+        sig_dir.mkdir()
+        f = sig_dir / "2026-05-27.csv"
+        f.write_text(self._CSV_ROW)
+        return sig_dir
+
+    def _state_file(self, tmp_path: Path) -> Path:
+        from tsml.portfolio.state import PortfolioState, save_state
+        p = tmp_path / "portfolio_state.json"
+        save_state(PortfolioState(cash=10_000.0), p)
+        return p
+
+    def _make_passing_recon(self):
+        from tsml.broker.reconcile import ReconcileResult
+        return ReconcileResult(
+            local_cash=10_000.0,
+            broker_cash=10_000.0,
+            cash_diff=0.0,
+            cash_diff_pct=0.0,
+            cash_ok=True,
+            positions_ok=True,
+            overall_ok=True,
+        )
+
+    def _make_failing_recon(self):
+        from tsml.broker.reconcile import ReconcileResult
+        return ReconcileResult(
+            local_cash=0.0,
+            broker_cash=10_000.0,
+            cash_diff=10_000.0,
+            cash_diff_pct=1.0,
+            cash_ok=False,
+            positions_ok=False,
+            overall_ok=False,
+        )
+
+    def _common_patches(self, monkeypatch, tmp_path, *, execute: bool):
+        """Apply patches common to all gate tests."""
+        import run_etoro_demo as etoro
+        import sys
+
+        argv = ["run_etoro_demo.py"] + (["--execute"] if execute else [])
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(etoro, "SIGNALS_DIR", self._write_signal(tmp_path))
+        monkeypatch.setattr(etoro, "STATE_PATH", self._state_file(tmp_path))
+
+        # Prevent log_orders from writing to disk
+        monkeypatch.setattr(etoro, "log_orders", lambda *a, **kw: Path("/dev/null"))
+
+        if execute:
+            # Stub out EtoroClient construction and live account fetch
+            monkeypatch.setenv("ETORO_API_KEY", "test-key-abc")
+            monkeypatch.setenv("ETORO_ACCOUNT_MODE", "demo")
+            monkeypatch.setattr(
+                etoro, "_live_account",
+                lambda _client: (10_000.0, 10_000.0, []),
+            )
+
+        return etoro
+
+    def test_dry_run_does_not_call_reconcile(self, monkeypatch, tmp_path):
+        etoro = self._common_patches(monkeypatch, tmp_path, execute=False)
+
+        recon_calls: list = []
+        monkeypatch.setattr(
+            etoro, "reconcile",
+            lambda *a, **kw: (recon_calls.append(a), self._make_passing_recon())[1],
+        )
+
+        etoro.main()   # dry-run completes without sys.exit
+
+        assert recon_calls == [], "reconcile() must not be called in dry-run mode"
+
+    def test_execute_calls_reconcile(self, monkeypatch, tmp_path):
+        etoro = self._common_patches(monkeypatch, tmp_path, execute=True)
+
+        recon_calls: list = []
+        monkeypatch.setattr(
+            etoro, "reconcile",
+            lambda *a, **kw: (recon_calls.append(a), self._make_passing_recon())[1],
+        )
+        # Stub execute_plan so no HTTP is attempted
+        monkeypatch.setattr(etoro, "execute_plan", lambda plan, *a, **kw: plan)
+
+        etoro.main()
+
+        assert len(recon_calls) == 1, "reconcile() must be called exactly once with --execute"
+
+    def test_failed_reconcile_prevents_execute_plan(self, monkeypatch, tmp_path):
+        etoro = self._common_patches(monkeypatch, tmp_path, execute=True)
+
+        monkeypatch.setattr(etoro, "reconcile", lambda *a, **kw: self._make_failing_recon())
+
+        execute_calls: list = []
+        monkeypatch.setattr(
+            etoro, "execute_plan",
+            lambda plan, *a, **kw: execute_calls.append(True) or plan,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            etoro.main()
+
+        assert exc_info.value.code == 1, "Failed reconciliation must exit 1"
+        assert execute_calls == [], "execute_plan must NOT be called after failed reconciliation"
+
+    def test_passed_reconcile_allows_execute_plan(self, monkeypatch, tmp_path):
+        etoro = self._common_patches(monkeypatch, tmp_path, execute=True)
+
+        monkeypatch.setattr(etoro, "reconcile", lambda *a, **kw: self._make_passing_recon())
+
+        execute_calls: list = []
+        monkeypatch.setattr(
+            etoro, "execute_plan",
+            lambda plan, *a, **kw: execute_calls.append(True) or plan,
+        )
+
+        etoro.main()
+
+        assert execute_calls == [True], "execute_plan must be called after passed reconciliation"
+
+    def test_execute_never_runs_from_weekly_job(self, monkeypatch):
+        """Regression: weekly_job.py must never pass --execute to run_etoro_demo.py."""
+        import importlib.util
+        scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+        spec = importlib.util.spec_from_file_location("weekly_job_check", scripts_dir / "weekly_job.py")
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        for step in mod.STEPS:
+            assert "--execute" not in step["cmd"], (
+                f"--execute found in step '{step['name']}': {step['cmd']}"
+            )

@@ -18,7 +18,10 @@ from tsml.broker.execution import (
     print_plan,
     signals_to_proposed_orders,
 )
+from tsml.broker.reconcile import ReconcileResult, format_report, reconcile
 from tsml.broker.risk import ProposedOrder, RiskConfig, RiskResult, validate_order
+from tsml.broker.verify import CheckResult, VerifyResult, verify
+from tsml.broker.verify import format_report as format_verify_report
 
 __all__ = [
     # base
@@ -32,4 +35,8 @@ __all__ = [
     "ExecutionPlan", "OrderRecord",
     "signals_to_proposed_orders", "build_execution_plan",
     "execute_plan", "log_orders", "print_plan",
+    # reconcile
+    "ReconcileResult", "reconcile", "format_report",
+    # verify
+    "CheckResult", "VerifyResult", "verify", "format_verify_report",
 ]
