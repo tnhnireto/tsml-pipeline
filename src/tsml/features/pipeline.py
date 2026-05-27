@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from tsml.features.benchmarks import DEFAULT_BENCHMARKS
 from tsml.features.targets import (
     next_5day_direction,
     next_day_direction,
@@ -19,19 +20,66 @@ from tsml.features.targets import (
     threshold_direction,
 )
 from tsml.features.transformers import (
+    above_sma,
     daily_returns,
+    distance_from_rolling_high,
+    fraction_positive_days,
     lagged_returns,
     log_returns,
     price_vs_mean,
+    relative_return,
     rolling_mean,
+    rolling_return,
+    rolling_up_streak,
     rolling_vol_ratio,
     rolling_volatility,
     rsi,
     sma_ratio,
+    vol_adjusted_return,
 )
 
+LEGACY_FEATURE_COLUMNS: tuple[str, ...] = (
+    "return_1d",
+    "log_return_1d",
+    "return_lag1",
+    "return_lag2",
+    "return_lag3",
+    "rolling_mean_10",
+    "rolling_vol_10",
+    "sma_ratio_5_20",
+    "rsi_14",
+    "vol_ratio_5_20",
+    "price_vs_mean_20",
+)
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+EXTENDED_FEATURE_COLUMNS: tuple[str, ...] = (
+    "rel_ret_20d_vs_spy",
+    "rel_ret_60d_vs_spy",
+    "rel_ret_20d_vs_qqq",
+    "rel_ret_60d_vs_qqq",
+    "spy_above_sma200",
+    "qqq_above_sma200",
+    "spy_ret_20d",
+    "spy_vol_20d",
+    "qqq_ret_20d",
+    "fraction_positive_days_20d",
+    "fraction_positive_days_60d",
+    "rolling_up_streak",
+    "distance_from_20d_high",
+    "distance_from_60d_high",
+    "ret20d_over_vol20d",
+    "ret60d_over_vol20d",
+)
+
+_VALID_FEATURE_SETS = ("legacy", "extended")
+
+
+def build_features(
+    df: pd.DataFrame,
+    *,
+    feature_set: str = "legacy",
+    benchmarks: dict[str, pd.Series] | None = None,
+) -> pd.DataFrame:
     """
     Compute all features from a raw OHLCV DataFrame.
 
@@ -42,6 +90,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     ----------
     df:
         OHLCV DataFrame with a DatetimeIndex and at least a 'close' column.
+    feature_set:
+        ``"legacy"`` — original 11 single-asset features.
+        ``"extended"`` — legacy features plus cross-sectional / regime
+        features (requires SPY and QQQ benchmark closes).
+    benchmarks:
+        Mapping of benchmark ticker to close price series.  Required when
+        ``feature_set="extended"``.
 
     Returns
     -------
@@ -49,6 +104,11 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         Same index as ``df``.  Many early rows will contain NaN (the warmup
         period for rolling windows).  Call ``make_dataset`` to drop them.
     """
+    if feature_set not in _VALID_FEATURE_SETS:
+        raise ValueError(
+            f"feature_set must be one of {_VALID_FEATURE_SETS}, got '{feature_set}'."
+        )
+
     close = df["close"]
 
     features = pd.DataFrame(index=df.index)
@@ -64,6 +124,47 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     features["vol_ratio_5_20"]    = rolling_vol_ratio(close, short_window=5, long_window=20)
     features["price_vs_mean_20"]  = price_vs_mean(close, window=20)
 
+    if feature_set == "extended":
+        if benchmarks is None:
+            raise ValueError(
+                "benchmarks must be provided when feature_set='extended'."
+            )
+        missing = set(DEFAULT_BENCHMARKS) - set(benchmarks)
+        if missing:
+            raise ValueError(
+                f"benchmarks missing required symbols: {sorted(missing)}."
+            )
+
+        spy = benchmarks["SPY"]
+        qqq = benchmarks["QQQ"]
+
+        features["rel_ret_20d_vs_spy"] = relative_return(
+            close, spy, 20, label="rel_ret_20d_vs_spy"
+        )
+        features["rel_ret_60d_vs_spy"] = relative_return(
+            close, spy, 60, label="rel_ret_60d_vs_spy"
+        )
+        features["rel_ret_20d_vs_qqq"] = relative_return(
+            close, qqq, 20, label="rel_ret_20d_vs_qqq"
+        )
+        features["rel_ret_60d_vs_qqq"] = relative_return(
+            close, qqq, 60, label="rel_ret_60d_vs_qqq"
+        )
+
+        features["spy_above_sma200"] = above_sma(spy.reindex(df.index).ffill(), 200).astype(float)
+        features["qqq_above_sma200"] = above_sma(qqq.reindex(df.index).ffill(), 200).astype(float)
+        features["spy_ret_20d"] = rolling_return(spy.reindex(df.index).ffill(), 20)
+        features["spy_vol_20d"] = rolling_volatility(spy.reindex(df.index).ffill(), 20)
+        features["qqq_ret_20d"] = rolling_return(qqq.reindex(df.index).ffill(), 20)
+
+        features["fraction_positive_days_20d"] = fraction_positive_days(close, 20)
+        features["fraction_positive_days_60d"] = fraction_positive_days(close, 60)
+        features["rolling_up_streak"] = rolling_up_streak(close)
+        features["distance_from_20d_high"] = distance_from_rolling_high(close, 20)
+        features["distance_from_60d_high"] = distance_from_rolling_high(close, 60)
+        features["ret20d_over_vol20d"] = vol_adjusted_return(close, 20)
+        features["ret60d_over_vol20d"] = vol_adjusted_return(close, 60)
+
     return features
 
 
@@ -73,6 +174,9 @@ _VALID_TARGETS = ("direction", "return", "direction_5d", "threshold")
 def make_dataset(
     df: pd.DataFrame,
     target: str = "direction",
+    *,
+    feature_set: str = "legacy",
+    benchmarks: dict[str, pd.Series] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
     Build a clean (X, y) pair ready for model training.
@@ -104,6 +208,10 @@ def make_dataset(
             1 (up > 0.5 %) or 0 (down > 0.5 %); neutral days are NaN and
             dropped.  The model is trained only on strongly-directional
             days, then applied to all test dates.
+    feature_set:
+        ``"legacy"`` or ``"extended"`` — see :func:`build_features`.
+    benchmarks:
+        SPY/QQQ close series required when ``feature_set="extended"``.
 
     Returns
     -------
@@ -116,7 +224,7 @@ def make_dataset(
         )
 
     close = df["close"]
-    X = build_features(df)
+    X = build_features(df, feature_set=feature_set, benchmarks=benchmarks)
 
     if target == "direction":
         y = next_day_direction(close)

@@ -44,6 +44,9 @@ def run_walk_forward(
     model: Any,
     splitter: WalkForwardSplit,
     target: str = "direction",
+    *,
+    feature_set: str = "legacy",
+    benchmarks: dict[str, pd.Series] | None = None,
 ) -> pd.Series:
     """
     Run walk-forward cross-validation and return all out-of-sample predictions.
@@ -72,7 +75,12 @@ def run_walk_forward(
     ValueError
         If the cleaned dataset is too small for the splitter.
     """
-    X, y = make_dataset(df, target=target)
+    X, y = make_dataset(
+        df,
+        target=target,
+        feature_set=feature_set,
+        benchmarks=benchmarks,
+    )
 
     predictions: dict[pd.Timestamp, Any] = {}
 
@@ -100,6 +108,9 @@ def run_walk_forward_proba(
     model: Any,
     splitter: WalkForwardSplit,
     target: str = "direction",
+    *,
+    feature_set: str = "legacy",
+    benchmarks: dict[str, pd.Series] | None = None,
 ) -> pd.Series:
     """
     Walk-forward cross-validation that returns P(up) probabilities.
@@ -130,7 +141,12 @@ def run_walk_forward_proba(
     pd.Series
         P(up) probabilities indexed by date.  Name is ``"proba_up"``.
     """
-    X, y = make_dataset(df, target=target)
+    X, y = make_dataset(
+        df,
+        target=target,
+        feature_set=feature_set,
+        benchmarks=benchmarks,
+    )
 
     probas: dict[pd.Timestamp, float] = {}
 

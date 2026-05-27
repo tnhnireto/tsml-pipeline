@@ -1,4 +1,10 @@
-from tsml.features.pipeline import build_features, make_dataset
+from tsml.features.benchmarks import DEFAULT_BENCHMARKS, load_benchmark_closes
+from tsml.features.pipeline import (
+    EXTENDED_FEATURE_COLUMNS,
+    LEGACY_FEATURE_COLUMNS,
+    build_features,
+    make_dataset,
+)
 from tsml.features.targets import (
     next_5day_direction,
     next_day_direction,
@@ -6,18 +12,29 @@ from tsml.features.targets import (
     threshold_direction,
 )
 from tsml.features.transformers import (
+    above_sma,
     daily_returns,
+    distance_from_rolling_high,
+    fraction_positive_days,
     lagged_returns,
     log_returns,
     price_vs_mean,
+    relative_return,
     rolling_mean,
+    rolling_return,
+    rolling_up_streak,
     rolling_vol_ratio,
     rolling_volatility,
     rsi,
     sma_ratio,
+    vol_adjusted_return,
 )
 
 __all__ = [
+    "DEFAULT_BENCHMARKS",
+    "load_benchmark_closes",
+    "LEGACY_FEATURE_COLUMNS",
+    "EXTENDED_FEATURE_COLUMNS",
     "daily_returns",
     "log_returns",
     "lagged_returns",

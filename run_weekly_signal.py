@@ -36,6 +36,7 @@ from tsml.data_loader import YFinanceLoader
 from tsml.models.baselines import CalibratedLogisticRegressionModel
 from tsml.portfolio import enrich_with_context, generate_signals, rank_universe
 from tsml.portfolio.state import load_state
+from tsml.reporting.feature_analysis import format_feature_importance
 from tsml.validation import WalkForwardSplit
 
 # ===========================================================================
@@ -63,6 +64,7 @@ TOP_N:                int   = 5
 MIN_SCORE:            float = 0.55   # base eligibility threshold
 MIN_SCORE_DOWNTREND:  float = 0.62   # stricter threshold when above_sma_200 is False
 TARGET:               str   = "threshold"   # high-conviction days only
+FEATURE_SET:          str   = "extended"    # legacy | extended model features
 
 # Current open positions are loaded automatically from data/portfolio_state.json.
 # Run: python run_etoro_demo.py --commit-state  to update that file after a
@@ -103,6 +105,7 @@ print(_SEP2)
 print(f"  Universe  : {len(UNIVERSE)} symbols")
 print(f"  Period    : {START_DATE}  to  {END_DATE}")
 print(f"  Target    : {TARGET}  (high-conviction days, |ret| > 0.5 %)")
+print(f"  Features  : {FEATURE_SET}")
 print(f"  Top N     : {TOP_N}   |   Min score : {MIN_SCORE}  |  Min score (downtrend) : {MIN_SCORE_DOWNTREND}")
 if CURRENT_POSITIONS:
     print(f"  Holdings  : {', '.join(sorted(CURRENT_POSITIONS))}")
@@ -135,6 +138,7 @@ ranking = rank_universe(
     start=START_DATE,
     end=END_DATE,
     loader=loader,
+    feature_set=FEATURE_SET,
 )
 
 if ranking.empty:
@@ -151,6 +155,9 @@ n_skipped = len(UNIVERSE) - n_scored
 if n_skipped:
     print(f"  Note: {n_skipped} symbol(s) skipped (see stderr for details).")
     print()
+
+print(format_feature_importance(model))
+print()
 
 # ===========================================================================
 # ENRICH WITH MARKET CONTEXT

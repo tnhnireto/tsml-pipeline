@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tsml.broker.base import BrokerClient, OrderResult
+from tsml.broker.base import BrokerClient, BrokerError, OrderResult
 from tsml.broker.risk import ProposedOrder, RiskConfig, RiskResult, validate_order
 
 if TYPE_CHECKING:
@@ -189,6 +189,8 @@ def execute_plan(
     plan: ExecutionPlan,
     client: BrokerClient,
     dry_run: bool = True,
+    *,
+    stop_on_failure: bool = True,
 ) -> ExecutionPlan:
     """
     Submit all approved orders in ``plan`` to ``client``.
@@ -196,6 +198,9 @@ def execute_plan(
     When ``dry_run=True`` (the default) ``client.place_order`` is called with
     ``dry_run=True``, which means no HTTP POST is sent — see
     :meth:`EtoroClient.place_order`.
+
+    When ``stop_on_failure`` is ``True`` (default), the first broker error
+    aborts the remaining submissions.
     """
     for record in plan.approved:
         o = record.order
@@ -207,12 +212,27 @@ def execute_plan(
                 dry_run=dry_run,
             )
         except Exception as exc:  # noqa: BLE001
-            broker_result = None
+            record.broker_result = None
             print(
                 f"  [execution] ERROR placing {o.side} {o.symbol}: {exc}",
                 file=sys.stderr,
             )
+            if stop_on_failure:
+                raise BrokerError(
+                    f"Order execution stopped after failed {o.side} {o.symbol}: {exc}"
+                ) from exc
+            continue
+
         record.broker_result = broker_result
+
+        if (
+            stop_on_failure
+            and not dry_run
+            and broker_result.status == "rejected"
+        ):
+            raise BrokerError(
+                f"Order execution stopped: {o.side} {o.symbol} rejected by broker."
+            )
 
     return plan
 

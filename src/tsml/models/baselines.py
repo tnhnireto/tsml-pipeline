@@ -205,14 +205,41 @@ class CalibratedLogisticRegressionModel:
         base = LogisticRegression(C=C, max_iter=max_iter, random_state=random_state)
         self._model = CalibratedClassifierCV(base, method=method, cv=cv)
         self._is_fitted = False
+        self._feature_names: list[str] = []
 
     def fit(
         self, X: pd.DataFrame, y: pd.Series
     ) -> "CalibratedLogisticRegressionModel":
+        self._feature_names = list(X.columns)
         X_scaled = self._scaler.fit_transform(X)
         self._model.fit(X_scaled, y)
         self._is_fitted = True
         return self
+
+    def feature_importance(self) -> pd.DataFrame | None:
+        """
+        Return mean |coefficient| across internal calibration folds.
+
+        Only available after ``fit``.  Useful for debugging which features
+        drive the calibrated logistic model on the most recent training fold.
+        """
+        if not self._is_fitted or not self._feature_names:
+            return None
+
+        importances = np.zeros(len(self._feature_names))
+        n = 0
+        for cc in self._model.calibrated_classifiers_:
+            importances += np.abs(cc.estimator.coef_.ravel())
+            n += 1
+        if n == 0:
+            return None
+
+        importances /= n
+        return (
+            pd.DataFrame({"feature": self._feature_names, "importance": importances})
+            .sort_values("importance", ascending=False)
+            .reset_index(drop=True)
+        )
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         self._check_fitted()

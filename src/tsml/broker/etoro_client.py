@@ -17,7 +17,9 @@ ETORO_ACCOUNT_MODE
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,9 @@ from tsml.broker.base import (
     OrderResult,
     PositionInfo,
 )
+from tsml.broker.live_limits import ENV_MAX_LIVE_ORDER_AMOUNT, get_max_live_order_amount
+
+logger = logging.getLogger(__name__)
 
 # Documented base URL — paths below are relative to /api/v1.
 DEFAULT_BASE_URL = "https://public-api.etoro.com/api/v1"
@@ -43,6 +48,8 @@ _ENDPOINTS: dict[str, str] = {
     "portfolio_demo": "/trading/info/demo/portfolio",
     "search":         "/market-data/search",
     "instruments":    "/market-data/instruments",
+    "order_open_demo": "/trading/execution/demo/market-open-orders/by-amount",
+    "order_close_demo": "/trading/execution/demo/market-close-orders/positions/{position_id}",
 }
 
 # Fields requested from the search endpoint (``fields`` is required by the API).
@@ -268,17 +275,22 @@ class EtoroClient:
 
         When ``dry_run=True`` (the default) no HTTP request is sent.
 
-        Live execution is not implemented until the documented demo order
-        endpoint and payload are wired and validated separately.
+        Live demo execution (``dry_run=False``):
+        - BUY: ``POST .../demo/market-open-orders/by-amount`` (leverage=1, no shorts)
+        - SELL: closes an existing manual long via the demo market-close endpoint
+        - Rejects orders above ``TSML_MAX_LIVE_ORDER_AMOUNT`` (default $1000)
         """
+        side = side.upper()
         if side not in {"BUY", "SELL"}:
             raise ValueError(f"side must be 'BUY' or 'SELL'; got '{side}'.")
-        if amount <= 0:
-            raise ValueError(f"amount must be positive; got {amount}.")
+        if side == "BUY" and amount <= 0:
+            raise ValueError(f"BUY amount must be positive; got {amount}.")
+        if side == "SELL" and amount < 0:
+            raise ValueError(f"SELL amount must be non-negative; got {amount}.")
 
         if dry_run:
             return OrderResult(
-                symbol=symbol,
+                symbol=symbol.upper(),
                 side=side,
                 amount=amount,
                 dry_run=True,
@@ -287,11 +299,158 @@ class EtoroClient:
                 message="Dry-run: no HTTP request sent.",
             )
 
-        raise NotImplementedError(
-            "Live order placement is not implemented.  "
-            "Documented endpoint: POST "
-            "/trading/execution/demo/market-open-orders/by-amount"
+        self._reject_if_amount_exceeds_live_cap(side, symbol, amount)
+
+        if side == "BUY":
+            instrument_id = self.resolve_instrument_id(symbol)
+            return self._place_buy_by_amount(symbol, instrument_id, amount)
+
+        return self._place_sell_close(symbol, amount)
+
+    def _reject_if_amount_exceeds_live_cap(
+        self,
+        side: str,
+        symbol: str,
+        amount: float,
+    ) -> None:
+        max_amount = get_max_live_order_amount()
+        if side == "BUY" and amount > max_amount:
+            raise BrokerError(
+                f"Order amount ${amount:,.2f} exceeds "
+                f"TSML_MAX_LIVE_ORDER_AMOUNT (${max_amount:,.2f}).  "
+                f"Reduce the order size or raise {ENV_MAX_LIVE_ORDER_AMOUNT} "
+                f"after validating risk controls."
+            )
+        if side == "SELL" and amount > 0 and amount > max_amount:
+            raise BrokerError(
+                f"Order amount ${amount:,.2f} exceeds "
+                f"TSML_MAX_LIVE_ORDER_AMOUNT (${max_amount:,.2f})."
+            )
+
+    def _place_buy_by_amount(
+        self,
+        symbol: str,
+        instrument_id: int,
+        amount: float,
+    ) -> OrderResult:
+        payload = {
+            "InstrumentId": instrument_id,
+            "IsBuy": True,
+            "Leverage": 1,
+            "Amount": round(amount, 2),
+        }
+        request_id = str(uuid.uuid4())
+        data = self._post(_ENDPOINTS["order_open_demo"], payload, request_id=request_id)
+        self._portfolio_cache = None
+        return self._order_result_from_response(
+            symbol.upper(),
+            "BUY",
+            amount,
+            data,
+            request_id=request_id,
         )
+
+    def _place_sell_close(self, symbol: str, amount: float) -> OrderResult:
+        position = self._find_manual_position_for_symbol(symbol)
+        if position is None:
+            raise BrokerError(
+                f"Cannot SELL {symbol.upper()}: no open manual demo position found."
+            )
+        position_id = _field(position, "positionID", "positionId", "PositionID")
+        if position_id is None:
+            raise BrokerError(
+                f"Cannot SELL {symbol.upper()}: position record missing positionID."
+            )
+        pos_amount = float(_field(position, "amount", default=0.0) or 0.0)
+        if amount > 0 and amount > pos_amount + 0.01:
+            raise BrokerError(
+                f"Cannot SELL ${amount:,.2f} of {symbol.upper()}: "
+                f"position value is ${pos_amount:,.2f}."
+            )
+
+        path = _ENDPOINTS["order_close_demo"].format(position_id=position_id)
+        payload = {"UnitsToDeduct": None}
+        request_id = str(uuid.uuid4())
+        data = self._post(path, payload, request_id=request_id)
+        self._portfolio_cache = None
+        return self._order_result_from_response(
+            symbol.upper(),
+            "SELL",
+            amount if amount > 0 else pos_amount,
+            data,
+            request_id=request_id,
+        )
+
+    def _find_manual_position_for_symbol(
+        self, symbol: str,
+    ) -> dict[str, Any] | None:
+        key = symbol.upper()
+        portfolio = self._client_portfolio()
+        for pos in self._manual_positions(portfolio):
+            iid = _field(pos, "instrumentID", "instrumentId")
+            if iid is None:
+                continue
+            self._ensure_symbols_for_ids({int(iid)})
+            sym = self._id_to_symbol.get(int(iid), "")
+            if sym.split(".")[0] == key or sym == key:
+                return pos
+        return None
+
+    @staticmethod
+    def _order_result_from_response(
+        symbol: str,
+        side: str,
+        amount: float,
+        data: Any,
+        *,
+        request_id: str,
+    ) -> OrderResult:
+        if not isinstance(data, dict):
+            raise BrokerError(
+                f"Unexpected order response type: {type(data).__name__}."
+            )
+        order_id = _field(
+            data,
+            "orderId",
+            "OrderID",
+            "orderID",
+            "OrderId",
+            "positionId",
+            "positionID",
+            "PositionID",
+            "PositionId",
+        )
+        status_raw = _field(data, "status", "Status", default="submitted")
+        status = str(status_raw).lower() if status_raw is not None else "submitted"
+        if status in {"executed", "filled", "success"}:
+            status = "filled"
+        elif status in {"rejected", "failed", "error"}:
+            status = "rejected"
+        else:
+            status = "submitted"
+
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            dry_run=False,
+            status=status,
+            order_id=str(order_id) if order_id is not None else None,
+            message=f"Demo order submitted (x-request-id={request_id}).",
+            raw=data,
+        )
+
+    @staticmethod
+    def _sanitize_for_log(data: Any) -> str:
+        """Serialize API payload for logs without secrets."""
+        text = json.dumps(data, default=str)
+        for pattern in (
+            r"(api[_-]?key[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+",
+            r"(user[_-]?key[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+",
+            r"(token[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+",
+        ):
+            text = re.sub(pattern, r"\1***", text, flags=re.IGNORECASE)
+        return text[:4000]
 
     # ------------------------------------------------------------------
     # Portfolio / instrument helpers
@@ -506,6 +665,47 @@ class EtoroClient:
     # ------------------------------------------------------------------
     # Internal HTTP helpers
     # ------------------------------------------------------------------
+
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        request_id: str | None = None,
+    ) -> Any:
+        url = self._base_url + path
+        rid = request_id or str(uuid.uuid4())
+        headers = {"x-request-id": rid}
+        try:
+            resp = self._session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info(
+                "POST %s [x-request-id=%s] response=%s",
+                url,
+                rid,
+                self._sanitize_for_log(data),
+            )
+            return data
+        except requests.HTTPError as exc:
+            body = ""
+            if exc.response is not None:
+                body = exc.response.text[:500]
+            if exc.response is not None and exc.response.status_code in (401, 403):
+                raise BrokerAuthError(
+                    f"POST {url} returned {exc.response.status_code}: {body[:200]}"
+                ) from exc
+            raise BrokerError(
+                f"POST {url} returned {exc.response.status_code if exc.response else '?'}: "
+                f"{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise BrokerError(f"POST {url} failed: {exc}") from exc
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = self._base_url + path

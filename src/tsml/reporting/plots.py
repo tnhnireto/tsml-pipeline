@@ -223,6 +223,67 @@ def plot_portfolio_vs_benchmark(
         zorder=3,
     )
 
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return output_path.resolve()
+
+
+def plot_strategy_vs_benchmarks(
+    equity_curve: pd.Series,
+    benchmark_closes: dict[str, pd.Series],
+    title: str,
+    output_path: str | Path,
+    *,
+    strategy_label: str = "Strategy",
+) -> Path:
+    """
+    Plot a strategy equity curve against multiple buy-and-hold benchmarks.
+
+    All series are inner-joined on dates and normalised to 1.0 at the start.
+    """
+    if not benchmark_closes:
+        raise ValueError("benchmark_closes must contain at least one series.")
+
+    common = equity_curve.index
+    for close in benchmark_closes.values():
+        common = common.intersection(close.index)
+    if common.empty:
+        raise ValueError("No overlapping dates between strategy and benchmarks.")
+
+    strat_norm = equity_curve.loc[common].sort_index()
+    strat_norm = strat_norm / strat_norm.iloc[0]
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+
+    bench_colours = [_BNH_COLOUR, "#607D8B", "#8D6E63", "#78909C"]
+    for i, (label, close) in enumerate(benchmark_closes.items()):
+        bench = close.loc[common].sort_index()
+        bench_norm = bench / bench.iloc[0]
+        colour = bench_colours[i % len(bench_colours)]
+        ax.plot(
+            bench_norm.index,
+            bench_norm.values,
+            color=colour,
+            linewidth=1.5,
+            linestyle="--",
+            label=f"{label}  ({bench_norm.iloc[-1] - 1:+.1%})",
+            zorder=2,
+        )
+
+    ax.plot(
+        strat_norm.index,
+        strat_norm.values,
+        color=_STRATEGY_COLOURS[0],
+        linewidth=1.8,
+        label=f"{strategy_label}  ({strat_norm.iloc[-1] - 1:+.1%})",
+        zorder=3,
+    )
+
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=":", alpha=0.5)
     ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
     ax.set_xlabel("Date", fontsize=10)

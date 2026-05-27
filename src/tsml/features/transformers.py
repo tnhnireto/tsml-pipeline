@@ -175,3 +175,96 @@ def rsi(close: pd.Series, window: int = 14) -> pd.Series:
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return (100 - 100 / (1 + rs)).rename(f"rsi_{window}")
+
+
+# ---------------------------------------------------------------------------
+# Extended cross-sectional / regime / momentum features
+# ---------------------------------------------------------------------------
+
+
+def rolling_return(close: pd.Series, window: int) -> pd.Series:
+    """
+    Cumulative simple return over the last ``window`` trading days.
+
+        r_t = close_t / close_{t-window} - 1
+
+    Requires ``window`` prior observations; earlier rows are NaN.
+    """
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}.")
+    return (close / close.shift(window) - 1.0).rename(f"return_{window}d")
+
+
+def align_benchmark(benchmark_close: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
+    """
+    Reindex a benchmark close series to ``index``, forward-filling gaps.
+
+    Only past benchmark observations are used (``ffill``), so there is no
+    lookahead when the asset has a trading day the benchmark lacks.
+    """
+    return benchmark_close.reindex(index).ffill()
+
+
+def relative_return(
+    asset_close: pd.Series,
+    benchmark_close: pd.Series,
+    window: int,
+    *,
+    label: str,
+) -> pd.Series:
+    """
+    Relative strength: asset ``window``-day return minus benchmark return.
+
+        rel_t = return_window(asset)_t - return_window(benchmark)_t
+    """
+    bench = align_benchmark(benchmark_close, asset_close.index)
+    asset_ret = rolling_return(asset_close, window)
+    bench_ret = rolling_return(bench, window)
+    return (asset_ret - bench_ret).rename(label)
+
+
+def above_sma(close: pd.Series, window: int = 200) -> pd.Series:
+    """True when ``close`` is strictly above its ``window``-day SMA."""
+    sma = close.rolling(window=window, min_periods=window).mean()
+    return (close > sma).rename(f"above_sma_{window}")
+
+
+def fraction_positive_days(close: pd.Series, window: int) -> pd.Series:
+    """Share of positive daily returns in the trailing ``window`` days."""
+    rets = daily_returns(close)
+    pos = (rets > 0).astype(float)
+    return pos.rolling(window=window, min_periods=window).mean().rename(
+        f"fraction_positive_days_{window}d"
+    )
+
+
+def rolling_up_streak(close: pd.Series) -> pd.Series:
+    """
+    Count of consecutive up-days (close-to-close gain) ending at each date.
+
+    Resets to 0 on flat or down days.
+    """
+    up = (daily_returns(close) > 0).astype(int)
+    groups = (up == 0).cumsum()
+    return up.groupby(groups).cumsum().astype(float).rename("rolling_up_streak")
+
+
+def distance_from_rolling_high(close: pd.Series, window: int) -> pd.Series:
+    """
+    Fractional distance below the ``window``-day rolling high.
+
+        (close_t - max(close, window)) / max(close, window)  <= 0
+    """
+    high = close.rolling(window=window, min_periods=window).max()
+    return ((close - high) / high).rename(f"distance_from_{window}d_high")
+
+
+def vol_adjusted_return(close: pd.Series, window: int) -> pd.Series:
+    """
+    Rolling ``window``-day return divided by ``window``-day realised volatility.
+
+    Guards against division by zero (returns NaN when vol is 0).
+    """
+    ret = rolling_return(close, window)
+    vol = rolling_volatility(close, window)
+    return (ret / vol.replace(0, np.nan)).rename(f"ret{window}d_over_vol{window}d")

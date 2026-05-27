@@ -15,6 +15,7 @@ import pytest
 from tsml.broker.base import (
     AccountInfo,
     BrokerAuthError,
+    BrokerError,
     BrokerModeError,
     OrderResult,
     PositionInfo,
@@ -368,7 +369,40 @@ class TestOrderLogging:
             assert entry["dry_run"] is True
 
 
-class TestIdempotentLogging:
+class TestExecutePlanStopOnFailure:
+    def test_stops_on_first_failed_order(self, demo_env):
+        from tsml.broker.execution import ExecutionPlan, OrderRecord, execute_plan
+        from tsml.broker.risk import ProposedOrder, RiskResult
+
+        class FailingClient:
+            calls: list[str] = []
+
+            def place_order(self, symbol, side, amount, dry_run=True):
+                FailingClient.calls.append(symbol)
+                if symbol == "AAPL":
+                    raise BrokerError("simulated broker failure")
+                return OrderResult(
+                    symbol=symbol,
+                    side=side,
+                    amount=amount,
+                    dry_run=dry_run,
+                    status="filled",
+                )
+
+        plan = ExecutionPlan()
+        for sym in ["AAPL", "MSFT"]:
+            plan.approved.append(
+                OrderRecord(
+                    order=ProposedOrder(sym, "BUY", 500.0),
+                    risk_result=RiskResult(approved=True),
+                )
+            )
+
+        FailingClient.calls = []
+        with pytest.raises(BrokerError, match="stopped"):
+            execute_plan(plan, FailingClient(), dry_run=False)
+
+        assert FailingClient.calls == ["AAPL"]
     """Idempotency: rerunning log_orders with the same plan must not duplicate entries."""
 
     def _make_plan(self, symbols: list[str]) -> ExecutionPlan:

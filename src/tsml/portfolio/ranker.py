@@ -62,6 +62,7 @@ import pandas as pd
 
 from tsml.data_loader import YFinanceLoader
 from tsml.data_loader.base import DataLoader
+from tsml.features.benchmarks import load_benchmark_closes
 from tsml.pipelines.train import run_walk_forward_proba
 from tsml.validation.splitters import WalkForwardSplit
 
@@ -75,6 +76,7 @@ def rank_universe(
     start: str,
     end: str,
     loader: DataLoader | None = None,
+    feature_set: str = "legacy",
 ) -> pd.DataFrame:
     """
     Rank a universe of symbols by model conviction (P(up) on the last OOS date).
@@ -114,6 +116,9 @@ def rank_universe(
     loader:
         Optional ``DataLoader`` instance.  Defaults to
         ``YFinanceLoader(cache_dir="data/raw")``.
+    feature_set:
+        ``"legacy"`` or ``"extended"``.  Extended features require SPY/QQQ
+        benchmark data loaded once and passed into the walk-forward pipeline.
 
     Returns
     -------
@@ -132,12 +137,23 @@ def rank_universe(
     if loader is None:
         loader = YFinanceLoader(cache_dir="data/raw")
 
+    benchmarks = None
+    if feature_set == "extended":
+        benchmarks = load_benchmark_closes(loader, start, end)
+
     records: list[dict[str, Any]] = []
 
     for symbol in symbols:
         try:
             df     = loader.load(symbol, start, end)
-            probas = run_walk_forward_proba(df, model, splitter, target=target)
+            probas = run_walk_forward_proba(
+                df,
+                model,
+                splitter,
+                target=target,
+                feature_set=feature_set,
+                benchmarks=benchmarks,
+            )
             score  = float(probas.iloc[-1])
             records.append({"symbol": symbol, "score": score})
 
@@ -264,3 +280,17 @@ def _empty_context() -> dict:
         "price_vs_sma_200": float("nan"),
         "above_sma_200":    None,
     }
+
+
+def compute_context_as_of(close: pd.Series, as_of: pd.Timestamp) -> dict:
+    """
+    Compute market-context metrics using only prices on or before *as_of*.
+
+    Used by the weekly backtest to apply the SMA200 filter without lookahead.
+    """
+    if close.empty:
+        return _empty_context()
+    hist = close.loc[:as_of].dropna()
+    if hist.empty:
+        return _empty_context()
+    return _compute_context(hist)

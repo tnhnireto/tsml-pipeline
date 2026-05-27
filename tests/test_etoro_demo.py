@@ -409,6 +409,7 @@ class TestReconciliationGate:
         if execute:
             # Stub out EtoroClient construction and live account fetch
             monkeypatch.setenv("ETORO_API_KEY", "test-key-abc")
+            monkeypatch.setenv("ETORO_USER_KEY", "test-user-key-xyz")
             monkeypatch.setenv("ETORO_ACCOUNT_MODE", "demo")
             monkeypatch.setattr(
                 etoro, "_live_account",
@@ -476,6 +477,21 @@ class TestReconciliationGate:
         etoro.main()
 
         assert execute_calls == [True], "execute_plan must be called after passed reconciliation"
+
+    def test_execute_stops_on_first_failed_order(self, monkeypatch, tmp_path):
+        etoro = self._common_patches(monkeypatch, tmp_path, execute=True)
+        monkeypatch.setattr(etoro, "reconcile", lambda *a, **kw: self._make_passing_recon())
+
+        from tsml.broker.base import BrokerError
+
+        def _fail_plan(plan, client, dry_run=False, **kw):
+            raise BrokerError("Order execution stopped after failed BUY AAPL: simulated")
+
+        monkeypatch.setattr(etoro, "execute_plan", _fail_plan)
+
+        with pytest.raises(SystemExit) as exc_info:
+            etoro.main()
+        assert exc_info.value.code == 1
 
     def test_execute_never_runs_from_weekly_job(self, monkeypatch):
         """Regression: weekly_job.py must never pass --execute to run_etoro_demo.py."""

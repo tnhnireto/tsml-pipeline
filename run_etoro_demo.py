@@ -34,6 +34,8 @@ Environment variables
 ETORO_API_KEY         Required for --execute.  Ignored in dry-run.
 ETORO_USER_KEY        Required for --execute (demo user key).  Ignored in dry-run.
 ETORO_ACCOUNT_MODE    Must be "demo" (default).
+TSML_MAX_LIVE_ORDER_AMOUNT
+                      Max USD notional per live demo order (default 1000).
 
 Setup
 -----
@@ -354,8 +356,17 @@ def main() -> None:
     # ── Execute ─────────────────────────────────────────────────────────
     if not dry_run and client is not None:
         print("Submitting approved orders to eToro demo account ...")
-        plan = execute_plan(plan, client, dry_run=False)
+        try:
+            plan = execute_plan(plan, client, dry_run=False, stop_on_failure=True)
+        except BrokerError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
         print("Done.")
+        print()
+        print(
+            "Next step: refresh local state from the broker after fills settle:"
+        )
+        print("  python scripts/sync_state_from_broker.py --confirm")
     elif not dry_run:
         print("WARNING: --execute passed but no client available.", file=sys.stderr)
     else:
@@ -369,15 +380,22 @@ def main() -> None:
         log_path = log_orders(plan, dry_run=dry_run, signal_date=signal_date)
         print(f"\nOrder log written: {log_path}")
 
-    # ── Commit state (paper trading) ─────────────────────────────────────
+    # ── Commit state (paper trading, dry-run only) ────────────────────────
     if args.commit_state:
-        new_state = apply_orders(state, plan.approved, signal_date=signal_date)
-        save_state(new_state, STATE_PATH)
-        print()
-        print(f"Portfolio state committed: {STATE_PATH}")
-        print(f"  Date      : {signal_date}")
-        print(f"  Positions : {sorted(new_state.positions.keys()) or '(none)'}")
-        print(f"  Cash      : ${new_state.cash:,.2f}  (approx; SELL amounts not tracked)")
+        if not dry_run:
+            print(
+                "\nNOTE: --commit-state ignored with --execute.  "
+                "Use sync_state_from_broker.py after broker confirms fills.",
+                file=sys.stderr,
+            )
+        else:
+            new_state = apply_orders(state, plan.approved, signal_date=signal_date)
+            save_state(new_state, STATE_PATH)
+            print()
+            print(f"Portfolio state committed: {STATE_PATH}")
+            print(f"  Date      : {signal_date}")
+            print(f"  Positions : {sorted(new_state.positions.keys()) or '(none)'}")
+            print(f"  Cash      : ${new_state.cash:,.2f}  (approx; SELL amounts not tracked)")
 
 
 if __name__ == "__main__":

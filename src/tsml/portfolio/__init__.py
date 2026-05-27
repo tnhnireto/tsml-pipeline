@@ -12,6 +12,14 @@ from tsml.portfolio.tracker import (
     weekly_returns,
 )
 
+from tsml.portfolio.weekly_backtest import (
+    BacktestMetrics,
+    WeeklyBacktestResult,
+    compute_backtest_metrics,
+    format_backtest_report,
+    run_weekly_backtest,
+)
+
 __all__ = [
     "rank_universe",
     "enrich_with_context",
@@ -30,4 +38,9 @@ __all__ = [
     "build_equity_curve",
     "weekly_returns",
     "compute_portfolio_stats",
+    "BacktestMetrics",
+    "WeeklyBacktestResult",
+    "compute_backtest_metrics",
+    "format_backtest_report",
+    "run_weekly_backtest",
 ]

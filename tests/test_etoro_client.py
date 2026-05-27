@@ -280,17 +280,71 @@ class TestInstrumentSearch:
 
 
 # ---------------------------------------------------------------------------
-# place_order — dry-run only
+# place_order
 # ---------------------------------------------------------------------------
+
+ORDER_BUY_RESPONSE = {
+    "orderId": "ord-demo-12345",
+    "status": "Executed",
+    "instrumentId": 1001,
+    "amount": 500.0,
+}
+
 
 class TestPlaceOrder:
     def test_dry_run_does_not_call_http(self, client):
-        with patch.object(client._session, "get") as mock_get:
+        with patch.object(client._session, "get") as mock_get, \
+             patch.object(client._session, "post") as mock_post:
             result = client.place_order("AAPL", "BUY", 500.0, dry_run=True)
         mock_get.assert_not_called()
+        mock_post.assert_not_called()
         assert result.status == "dry_run"
         assert result.dry_run is True
 
-    def test_live_execution_raises_not_implemented(self, client):
-        with pytest.raises(NotImplementedError, match="market-open-orders"):
-            client.place_order("AAPL", "BUY", 500.0, dry_run=False)
+    def test_live_buy_posts_to_demo_by_amount_endpoint(self, client, monkeypatch):
+        monkeypatch.setenv("TSML_MAX_LIVE_ORDER_AMOUNT", "1000")
+        with patch.object(client, "resolve_instrument_id", return_value=1001) as mock_resolve:
+            with patch.object(client._session, "post") as mock_post:
+                mock_post.return_value = _mock_response(ORDER_BUY_RESPONSE)
+                result = client.place_order("AAPL", "BUY", 500.0, dry_run=False)
+
+        mock_resolve.assert_called_once_with("AAPL")
+        mock_post.assert_called_once()
+        url = mock_post.call_args[0][0]
+        assert url.endswith("/trading/execution/demo/market-open-orders/by-amount")
+        body = mock_post.call_args.kwargs["json"]
+        assert body == {
+            "InstrumentId": 1001,
+            "IsBuy": True,
+            "Leverage": 1,
+            "Amount": 500.0,
+        }
+        headers = mock_post.call_args.kwargs["headers"]
+        assert "x-request-id" in headers
+        assert client._session.headers["x-api-key"] == "test-api-key"
+        assert client._session.headers["x-user-key"] == "test-user-key"
+        assert result.order_id == "ord-demo-12345"
+        assert result.status == "filled"
+        assert result.dry_run is False
+
+    def test_amount_above_max_live_order_amount_rejected(self, client, monkeypatch):
+        monkeypatch.setenv("TSML_MAX_LIVE_ORDER_AMOUNT", "1000")
+        with patch.object(client._session, "post") as mock_post:
+            with pytest.raises(BrokerError, match="TSML_MAX_LIVE_ORDER_AMOUNT"):
+                client.place_order("AAPL", "BUY", 1500.0, dry_run=False)
+        mock_post.assert_not_called()
+
+    def test_failed_post_raises_broker_error(self, client, monkeypatch):
+        monkeypatch.setenv("TSML_MAX_LIVE_ORDER_AMOUNT", "1000")
+        with patch.object(client, "resolve_instrument_id", return_value=1001):
+            with patch.object(client._session, "post") as mock_post:
+                mock_post.return_value = _mock_response({"error": "bad"}, status_code=400)
+                with pytest.raises(BrokerError, match="POST"):
+                    client.place_order("AAPL", "BUY", 500.0, dry_run=False)
+
+    def test_demo_mode_required_at_construction(self, monkeypatch):
+        monkeypatch.setenv("ETORO_API_KEY", "api")
+        monkeypatch.setenv("ETORO_USER_KEY", "user")
+        monkeypatch.setenv("ETORO_ACCOUNT_MODE", "real")
+        with pytest.raises(BrokerModeError, match="demo"):
+            EtoroClient(cache_path=None)
