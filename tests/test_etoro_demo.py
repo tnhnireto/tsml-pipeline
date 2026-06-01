@@ -505,3 +505,97 @@ class TestReconciliationGate:
             assert "--execute" not in step["cmd"], (
                 f"--execute found in step '{step['name']}': {step['cmd']}"
             )
+
+
+# ===========================================================================
+# Live order cap (TSML_MAX_LIVE_ORDER_AMOUNT)
+# ===========================================================================
+
+class TestLiveOrderCap:
+    def test_execute_mode_resolves_cap(self, demo, monkeypatch):
+        monkeypatch.setenv("TSML_MAX_LIVE_ORDER_AMOUNT", "500")
+        assert demo._resolve_live_order_cap(execute=True, use_live_cap=False) == 500.0
+
+    def test_dry_run_no_cap_by_default(self, demo):
+        assert demo._resolve_live_order_cap(execute=False, use_live_cap=False) is None
+
+    def test_dry_run_with_use_live_cap(self, demo, monkeypatch):
+        monkeypatch.setenv("TSML_MAX_LIVE_ORDER_AMOUNT", "500")
+        assert demo._resolve_live_order_cap(execute=False, use_live_cap=True) == 500.0
+
+    def test_cap_reduces_large_buy_proposal(self):
+        from tsml.broker.execution import signals_to_proposed_orders
+        from tsml.broker.risk import RiskConfig
+        from tsml.portfolio.strategy import SignalAction
+
+        orders = signals_to_proposed_orders(
+            [SignalAction("AAPL", "buy", 0.62)],
+            account_balance=10_000.0,
+            risk_config=RiskConfig(max_trade_amount_pct=0.20),
+            max_live_order_amount=500.0,
+        )
+        assert len(orders) == 1
+        assert orders[0].amount == 500.0
+
+    def test_no_cap_uses_full_allocation(self):
+        from tsml.broker.execution import signals_to_proposed_orders
+        from tsml.broker.risk import RiskConfig
+        from tsml.portfolio.strategy import SignalAction
+
+        orders = signals_to_proposed_orders(
+            [SignalAction("AAPL", "buy", 0.62)],
+            account_balance=10_000.0,
+            risk_config=RiskConfig(max_trade_amount_pct=0.20),
+        )
+        assert orders[0].amount == 2_000.0
+
+    def test_cap_cannot_increase_order_amount(self):
+        from tsml.broker.execution import signals_to_proposed_orders
+        from tsml.broker.risk import RiskConfig
+        from tsml.portfolio.strategy import SignalAction
+
+        orders = signals_to_proposed_orders(
+            [SignalAction("AAPL", "buy", 0.62)],
+            account_balance=1_000.0,
+            risk_config=RiskConfig(max_trade_amount_pct=0.20),
+            max_live_order_amount=500.0,
+        )
+        assert orders[0].amount == 200.0
+
+    def test_cash_buffer_still_applies_with_live_cap(self):
+        from tsml.broker.execution import build_execution_plan, signals_to_proposed_orders
+        from tsml.broker.risk import RiskConfig
+        from tsml.portfolio.strategy import SignalAction
+
+        config = RiskConfig(
+            mode="demo",
+            max_positions=5,
+            max_trade_amount_pct=0.20,
+            cash_buffer_pct=0.05,
+        )
+        balance = 10_000.0
+        cap = 500.0
+        signals = [
+            SignalAction("AAPL", "buy", 0.62),
+            SignalAction("MSFT", "buy", 0.60),
+            SignalAction("NVDA", "buy", 0.58),
+        ]
+        proposed = signals_to_proposed_orders(
+            signals,
+            balance,
+            config,
+            max_live_order_amount=cap,
+        )
+        assert all(o.amount == cap for o in proposed)
+
+        plan = build_execution_plan(
+            proposed,
+            config,
+            account_balance=balance,
+            account_cash=1_200.0,
+            open_positions=[],
+        )
+        assert len(plan.approved) == 1
+        assert plan.approved[0].order.symbol == "AAPL"
+        assert len(plan.rejected) == 2
+        assert {r.order.symbol for r in plan.rejected} == {"MSFT", "NVDA"}

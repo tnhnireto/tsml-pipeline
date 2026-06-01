@@ -87,11 +87,14 @@ def signals_to_proposed_orders(
     signals: list[SignalAction],
     account_balance: float,
     risk_config: RiskConfig,
+    *,
+    max_live_order_amount: float | None = None,
 ) -> list[ProposedOrder]:
     """
     Convert a list of ``SignalAction`` objects into ``ProposedOrder`` objects.
 
-    - ``"buy"``     → BUY order sized at ``max_trade_amount_pct * balance``
+    - ``"buy"``     → BUY order sized at ``max_trade_amount_pct * balance``,
+      optionally capped by ``max_live_order_amount`` (never increased)
     - ``"sell"``    → SELL order (amount set to 0.0; broker handles full exit)
     - ``"hold"``    → skipped
     - ``"blocked"`` → skipped (already filtered by the risk/signal layer)
@@ -101,11 +104,14 @@ def signals_to_proposed_orders(
 
     for sig in signals:
         if sig.action == "buy":
+            amount = trade_amount
+            if max_live_order_amount is not None:
+                amount = min(amount, max_live_order_amount)
             orders.append(
                 ProposedOrder(
                     symbol=sig.symbol,
                     side="BUY",
-                    amount=round(trade_amount, 2),
+                    amount=round(amount, 2),
                     score=sig.score,
                     signal_reason=sig.reason,
                 )

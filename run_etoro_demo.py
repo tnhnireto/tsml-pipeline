@@ -222,6 +222,19 @@ def _live_account(client) -> tuple[float, float, list[str]]:
     return account.balance, account.cash, [p.symbol for p in positions]
 
 
+def _resolve_live_order_cap(*, execute: bool, use_live_cap: bool) -> float | None:
+    """
+    Return the per-order live cap when ``--execute`` or ``--use-live-cap`` is set.
+
+    Dry-run without ``--use-live-cap`` returns ``None`` (no upfront cap).
+    """
+    if execute or use_live_cap:
+        from tsml.broker.live_limits import get_max_live_order_amount
+
+        return get_max_live_order_amount()
+    return None
+
+
 # ===========================================================================
 # MAIN
 # ===========================================================================
@@ -247,6 +260,14 @@ def main() -> None:
             "Update data/portfolio_state.json as if approved orders were filled.  "
             "Safe to use with dry-run for local paper-trading tracking.  "
             "Does NOT submit any real orders -- use --execute for that."
+        ),
+    )
+    parser.add_argument(
+        "--use-live-cap",
+        action="store_true",
+        help=(
+            "Apply TSML_MAX_LIVE_ORDER_AMOUNT to proposed BUY sizes in dry-run.  "
+            "Applied automatically when --execute is passed."
         ),
     )
     args = parser.parse_args()
@@ -339,7 +360,20 @@ def main() -> None:
     print()
 
     # ── Build proposed orders ───────────────────────────────────────────
-    proposed = signals_to_proposed_orders(signals, balance, RISK_CONFIG)
+    live_order_cap = _resolve_live_order_cap(
+        execute=not dry_run,
+        use_live_cap=args.use_live_cap,
+    )
+    if live_order_cap is not None:
+        print(f"Live order cap applied: ${live_order_cap:,.2f} per order")
+        print()
+
+    proposed = signals_to_proposed_orders(
+        signals,
+        balance,
+        RISK_CONFIG,
+        max_live_order_amount=live_order_cap,
+    )
     print(f"Proposed orders : {len(proposed)}")
 
     # ── Validate with risk rules ────────────────────────────────────────
