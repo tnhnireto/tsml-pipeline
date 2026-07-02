@@ -258,3 +258,112 @@ class TestTargetForwarding:
             loader=loader_3symbols,
         )
         assert (result["score"] == 1.0).all()
+
+
+# ---------------------------------------------------------------------------
+# Scoring modes and smoothing
+# ---------------------------------------------------------------------------
+
+class TestScoringModes:
+    def test_fresh_fit_needs_no_splitter(self, loader_3symbols):
+        result = rank_universe(
+            ["AAA", "BBB", "CCC"],
+            model=LogisticRegressionModel(),
+            scoring="fresh_fit",
+            start="2015-01-01",
+            end="2023-12-31",
+            loader=loader_3symbols,
+        )
+        assert len(result) == 3
+        assert (result["score"] >= 0.0).all()
+        assert (result["score"] <= 1.0).all()
+
+    def test_fresh_fit_with_smoothing_window(self, loader_3symbols):
+        result = rank_universe(
+            ["AAA", "BBB", "CCC"],
+            model=LogisticRegressionModel(),
+            scoring="fresh_fit",
+            smoothing_window=5,
+            target="direction_5d",
+            start="2015-01-01",
+            end="2023-12-31",
+            loader=loader_3symbols,
+        )
+        assert len(result) == 3
+
+    def test_walk_forward_smoothing_changes_score(self, splitter, loader_3symbols):
+        """Smoothed and unsmoothed walk-forward scores should differ (noise)."""
+        kwargs = dict(
+            model=LogisticRegressionModel(),
+            splitter=splitter,
+            start="2015-01-01",
+            end="2023-12-31",
+            loader=loader_3symbols,
+        )
+        raw = rank_universe(["AAA"], **kwargs)
+        smoothed = rank_universe(["AAA"], smoothing_window=5, **kwargs)
+        assert raw.loc[0, "score"] != pytest.approx(smoothed.loc[0, "score"])
+
+    def test_fresh_fit_always_long_scores_one(self, loader_3symbols):
+        result = rank_universe(
+            ["AAA", "BBB"],
+            model=AlwaysLong(),
+            scoring="fresh_fit",
+            smoothing_window=5,
+            start="2015-01-01",
+            end="2023-12-31",
+            loader=loader_3symbols,
+        )
+        assert (result["score"] == 1.0).all()
+
+    def test_walk_forward_without_splitter_raises(self, loader_3symbols):
+        with pytest.raises(ValueError, match="splitter is required"):
+            rank_universe(
+                ["AAA"],
+                model=LogisticRegressionModel(),
+                start="2015-01-01",
+                end="2023-12-31",
+                loader=loader_3symbols,
+            )
+
+    def test_invalid_scoring_raises(self, splitter, loader_3symbols):
+        with pytest.raises(ValueError, match="scoring"):
+            rank_universe(
+                ["AAA"],
+                model=LogisticRegressionModel(),
+                splitter=splitter,
+                scoring="magic",
+                start="2015-01-01",
+                end="2023-12-31",
+                loader=loader_3symbols,
+            )
+
+    def test_invalid_smoothing_window_raises(self, splitter, loader_3symbols):
+        with pytest.raises(ValueError, match="smoothing_window"):
+            rank_universe(
+                ["AAA"],
+                model=LogisticRegressionModel(),
+                splitter=splitter,
+                smoothing_window=0,
+                start="2015-01-01",
+                end="2023-12-31",
+                loader=loader_3symbols,
+            )
+
+    def test_fresh_fit_skips_symbol_with_too_little_data(self, loader_3symbols):
+        tiny_loader = StubLoader(
+            {
+                "TINY": _make_ohlcv(100, seed=9),
+                "BIG": _make_ohlcv(800, seed=5),
+            }
+        )
+        result = rank_universe(
+            ["TINY", "BIG"],
+            model=LogisticRegressionModel(),
+            scoring="fresh_fit",
+            start="2015-01-01",
+            end="2023-12-31",
+            loader=tiny_loader,
+        )
+        assert "TINY" not in result["symbol"].values
+        assert "BIG" in result["symbol"].values

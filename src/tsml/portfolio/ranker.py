@@ -64,31 +64,41 @@ from tsml.data_loader import YFinanceLoader
 from tsml.data_loader.base import DataLoader
 from tsml.features.benchmarks import load_benchmark_closes
 from tsml.features.pipeline import BENCHMARK_FEATURE_SETS
-from tsml.pipelines.train import run_walk_forward_proba
+from tsml.pipelines.train import run_full_fit_latest_proba, run_walk_forward_proba
 from tsml.validation.splitters import WalkForwardSplit
+
+_VALID_SCORING = ("walk_forward", "fresh_fit")
 
 
 def rank_universe(
     symbols: Sequence[str],
     model: Any,
-    splitter: WalkForwardSplit,
+    splitter: WalkForwardSplit | None = None,
     target: str = "direction",
     *,
     start: str,
     end: str,
     loader: DataLoader | None = None,
     feature_set: str = "legacy",
+    scoring: str = "walk_forward",
+    smoothing_window: int = 1,
 ) -> pd.DataFrame:
     """
-    Rank a universe of symbols by model conviction (P(up) on the last OOS date).
+    Rank a universe of symbols by model conviction (P(up) score).
 
-    For each symbol the function:
+    Two scoring modes are supported:
 
-    1. Loads OHLCV data for the requested date range.
-    2. Builds features and the requested target with ``make_dataset``.
-    3. Runs ``run_walk_forward_proba`` to produce out-of-sample P(up) estimates.
-    4. Takes ``probas.iloc[-1]`` — the probability on the most recent OOS date
-       — as the ranking score.
+    ``scoring="walk_forward"`` (default, evaluation-grade)
+        Runs ``run_walk_forward_proba`` and scores each symbol by the mean of
+        its last ``smoothing_window`` out-of-sample probabilities.  The final
+        fold's model can be up to ``test_size`` days stale — use this mode
+        for research and comparisons, not live signals.
+
+    ``scoring="fresh_fit"`` (live-grade)
+        Runs ``run_full_fit_latest_proba``: fits a fresh model per symbol on
+        **all labelled history up to the latest date** and scores the mean
+        P(up) over the last ``smoothing_window`` feature rows (which include
+        the most recent trading day).  No stale OOS probabilities are used.
 
     Symbols for which any step raises an exception (insufficient data,
     download failure, splitter mismatch) are skipped.  A one-line warning is
@@ -101,11 +111,11 @@ def rank_universe(
     model:
         Any object with ``.fit(X, y)`` and ``.predict_proba(X)`` methods.
         The same instance is reused across symbols; state from one symbol's
-        final fold will be overwritten by the next symbol's first fold.
+        final fit will be overwritten by the next symbol's first fit.
     splitter:
-        A configured ``WalkForwardSplit``.  If the cleaned dataset for a
-        symbol is too small to satisfy ``splitter``'s requirements, that
-        symbol is skipped.
+        A configured ``WalkForwardSplit``.  Required when
+        ``scoring="walk_forward"``; unused (may be ``None``) for
+        ``scoring="fresh_fit"``.
     target:
         Target type passed to ``make_dataset``.  Must be one of
         ``"direction"``, ``"direction_5d"``, ``"threshold"``, ``"return"``.
@@ -118,8 +128,15 @@ def rank_universe(
         Optional ``DataLoader`` instance.  Defaults to
         ``YFinanceLoader(cache_dir="data/raw")``.
     feature_set:
-        ``"legacy"`` or ``"extended"``.  Extended features require SPY/QQQ
-        benchmark data loaded once and passed into the walk-forward pipeline.
+        ``"legacy"``, ``"extended"`` or ``"extended_v2"``.  Extended sets
+        require SPY/QQQ benchmark data loaded once and passed into the
+        pipeline.
+    scoring:
+        ``"walk_forward"`` (default) or ``"fresh_fit"`` — see above.
+    smoothing_window:
+        Number of most-recent probabilities averaged into the score
+        (>= 1, default 1 = no smoothing).  Smoothing reduces day-to-day
+        noise and turnover.
 
     Returns
     -------
@@ -130,11 +147,23 @@ def rank_universe(
 
     Notes
     -----
-    The score is only comparable across symbols when the same model and
-    splitter are used for all of them and their OOS date ranges overlap.
-    Symbols with very different data densities (e.g. a newly-listed stock
-    vs. a 10-year history) may have scores that are not directly comparable.
+    The score is only comparable across symbols when the same model,
+    scoring mode and parameters are used for all of them and their date
+    ranges overlap.  Symbols with very different data densities (e.g. a
+    newly-listed stock vs. a 10-year history) may have scores that are not
+    directly comparable.
     """
+    if scoring not in _VALID_SCORING:
+        raise ValueError(
+            f"scoring must be one of {_VALID_SCORING}, got '{scoring}'."
+        )
+    if smoothing_window < 1:
+        raise ValueError(
+            f"smoothing_window must be >= 1, got {smoothing_window}."
+        )
+    if scoring == "walk_forward" and splitter is None:
+        raise ValueError("splitter is required when scoring='walk_forward'.")
+
     if loader is None:
         loader = YFinanceLoader(cache_dir="data/raw")
 
@@ -146,16 +175,26 @@ def rank_universe(
 
     for symbol in symbols:
         try:
-            df     = loader.load(symbol, start, end)
-            probas = run_walk_forward_proba(
-                df,
-                model,
-                splitter,
-                target=target,
-                feature_set=feature_set,
-                benchmarks=benchmarks,
-            )
-            score  = float(probas.iloc[-1])
+            df = loader.load(symbol, start, end)
+            if scoring == "fresh_fit":
+                probas = run_full_fit_latest_proba(
+                    df,
+                    model,
+                    target=target,
+                    feature_set=feature_set,
+                    benchmarks=benchmarks,
+                    smoothing_window=smoothing_window,
+                )
+            else:
+                probas = run_walk_forward_proba(
+                    df,
+                    model,
+                    splitter,
+                    target=target,
+                    feature_set=feature_set,
+                    benchmarks=benchmarks,
+                )
+            score = float(probas.iloc[-smoothing_window:].mean())
             records.append({"symbol": symbol, "score": score})
 
         except Exception as exc:  # noqa: BLE001
