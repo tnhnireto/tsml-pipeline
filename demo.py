@@ -59,7 +59,8 @@ CONFIGS = [
 COSTS_BPS  = 5.0
 THRESHOLD  = 0.50    # probability cut-off for long signal
 TEST_SIZE  = 63      # ~1 quarter per fold
-GAP        = 1       # 1-day embargo near fold boundaries
+GAP        = 1       # embargo near fold boundaries (raised to the label
+                     # horizon for multi-day targets, e.g. 5 for direction_5d)
 
 # Single equity-curve plot saved for this (symbol, start, end, config index).
 PLOT_CASE = ("NVDA", "2020-01-01", "2023-12-31", 0)   # config index 0 = direction/hp1
@@ -67,21 +68,24 @@ PLOT_CASE = ("NVDA", "2020-01-01", "2023-12-31", 0)   # config index 0 = directi
 
 # ── Splitter factory ───────────────────────────────────────────────────────────
 
-def make_splitter(n_rows: int) -> WalkForwardSplit | None:
+def make_splitter(n_rows: int, gap: int = GAP) -> WalkForwardSplit | None:
     """Adapt splitter parameters to available row count.
 
     Returns None when the dataset is too small for even a single fold,
     signalling the caller to skip this (symbol, period, config) combination.
+
+    ``gap`` must be at least the label horizon so training labels never
+    overlap the test window (e.g. gap >= 5 for the direction_5d target).
     """
     min_train = 252 if n_rows < 800 else 504
-    if n_rows < min_train + TEST_SIZE + GAP:
+    if n_rows < min_train + TEST_SIZE + gap:
         return None
-    n_splits = min(8, (n_rows - min_train - GAP) // TEST_SIZE)
+    n_splits = min(8, (n_rows - min_train - gap) // TEST_SIZE)
     return WalkForwardSplit(
         n_splits=n_splits,
         min_train_size=min_train,
         test_size=TEST_SIZE,
-        gap=GAP,
+        gap=gap,
     )
 
 
@@ -150,7 +154,8 @@ for symbol in SYMBOLS:
             X, y     = make_dataset(df, target=cfg.target)
             # Build splitter from cleaned row count: the threshold target
             # drops ~50 % of rows, so we must size folds after dropping NaNs.
-            splitter  = make_splitter(len(X))
+            # The embargo must cover the label horizon (5 for direction_5d).
+            splitter  = make_splitter(len(X), gap=max(GAP, cfg.holding_period))
             if splitter is None:
                 print(f"  [{cfg.label}]  {len(X):,} rows  |  SKIP (too few rows)")
                 continue

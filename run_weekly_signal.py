@@ -5,11 +5,18 @@ Ranks a defined symbol universe by model conviction, enriches the ranking
 with plain-language market context, and suggests buy / hold / sell actions
 for the next trading week.
 
-Target: "threshold"
-  Only high-conviction training days are used (|next-day return| > 0.5 %).
-  This focuses the model on clear directional moves and drops ambiguous days,
-  at the cost of fewer training samples.  Symbols with too little post-filter
-  data are skipped automatically.
+Target: "direction_5d"
+  The model predicts the probability that the price is higher in 5 trading
+  days — the same horizon the portfolio trades (weekly rebalance).
+
+Scoring: "fresh_fit"
+  A fresh model is trained per symbol on all labelled history up to the
+  latest date, then scores the most recent trading days.  Walk-forward
+  remains the evaluation method (backtests); it is not used for live
+  ranking because its final fold's model can be months stale.
+
+Smoothing: the score is the mean P(up) over the last SMOOTHING_WINDOW
+  trading days, which damps day-to-day noise and reduces turnover.
 
 Usage
 -----
@@ -52,19 +59,25 @@ UNIVERSE: list[str] = [
     "TSLA", "JPM", "JNJ", "XOM", "V", "GS", "NFLX",
 ]
 
-START_DATE: str = "2019-01-01"
+# Earlier start gives longer feature warmup and more training history.
+START_DATE: str = "2017-01-01"
 END_DATE:   str = date.today().strftime("%Y-%m-%d")
 
+# Walk-forward splitter settings — used only when SCORING="walk_forward".
+# GAP must be >= the label horizon (5 for direction_5d) to prevent
+# training labels from overlapping the test window.
 N_SPLITS:       int = 5
 MIN_TRAIN_SIZE: int = 252
 TEST_SIZE:      int = 63
-GAP:            int = 1
+GAP:            int = 5
 
 TOP_N:                int   = 5
 MIN_SCORE:            float = 0.55   # base eligibility threshold
 MIN_SCORE_DOWNTREND:  float = 0.62   # stricter threshold when above_sma_200 is False
-TARGET:               str   = "threshold"   # high-conviction days only
-FEATURE_SET:          str   = "extended"    # legacy | extended model features
+TARGET:               str   = "direction_5d"  # predict the horizon we trade
+FEATURE_SET:          str   = "extended_v2"   # legacy | extended | extended_v2
+SCORING:              str   = "fresh_fit"     # fresh model per symbol, latest data
+SMOOTHING_WINDOW:     int   = 5               # mean P(up) over last N days
 
 # Current open positions are loaded automatically from data/portfolio_state.json.
 # Run: python run_etoro_demo.py --commit-state  to update that file after a
@@ -104,8 +117,9 @@ print("  Weekly portfolio signal")
 print(_SEP2)
 print(f"  Universe  : {len(UNIVERSE)} symbols")
 print(f"  Period    : {START_DATE}  to  {END_DATE}")
-print(f"  Target    : {TARGET}  (high-conviction days, |ret| > 0.5 %)")
+print(f"  Target    : {TARGET}  (P(price higher in 5 trading days))")
 print(f"  Features  : {FEATURE_SET}")
+print(f"  Scoring   : {SCORING}  |  Smoothing : mean of last {SMOOTHING_WINDOW} days")
 print(f"  Top N     : {TOP_N}   |   Min score : {MIN_SCORE}  |  Min score (downtrend) : {MIN_SCORE_DOWNTREND}")
 if CURRENT_POSITIONS:
     print(f"  Holdings  : {', '.join(sorted(CURRENT_POSITIONS))}")
@@ -139,14 +153,17 @@ ranking = rank_universe(
     end=END_DATE,
     loader=loader,
     feature_set=FEATURE_SET,
+    scoring=SCORING,
+    smoothing_window=SMOOTHING_WINDOW,
 )
 
 if ranking.empty:
     print(
         "ERROR: No symbols could be ranked.\n"
-        "  - Check that START_DATE gives enough history for the splitter.\n"
-        "  - With target='threshold' roughly half the rows are dropped;\n"
-        "    try extending START_DATE further back if many symbols fail."
+        "  - Check that START_DATE gives enough history for training\n"
+        "    (fresh_fit needs at least ~252 labelled rows per symbol).\n"
+        "  - Extended feature sets need long warmup (SMA200); symbols with\n"
+        "    short histories are skipped automatically."
     )
     sys.exit(1)
 
@@ -178,7 +195,8 @@ n_display = min(10, n_scored)
 
 print(
     f"Top {n_display} candidates"
-    f"  (score = P(up) on last OOS date, target = {TARGET}):"
+    f"  (score = mean P(up in 5d) over last {SMOOTHING_WINDOW} days,"
+    f" fresh model, target = {TARGET}):"
 )
 print(_SEP)
 print(
