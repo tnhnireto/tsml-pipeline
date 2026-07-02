@@ -241,10 +241,10 @@ class TestCoverageNSplits:
         n_splits = coverage_n_splits(start, end, min_train_size=252, test_size=63, gap=5)
 
         # Real NYSE trading rows ~= bdays minus ~9 holidays/year, and the
-        # extended feature sets drop ~200 warmup rows before splitting.
+        # feature pipeline drops ~25-65 warmup rows before splitting.
         bdays = len(pd.bdate_range(start, end))
         years = bdays / 261
-        realistic_feature_rows = bdays - int(9 * years) - 200
+        realistic_feature_rows = bdays - int(9 * years) - 65
 
         required = 252 + n_splits * 63 + 5
         assert required <= realistic_feature_rows
@@ -259,7 +259,7 @@ class TestCoverageNSplits:
         )
         bdays = len(pd.bdate_range(start, end))
         years = bdays / 261
-        rows = bdays - int(9 * years) - 200  # realistic feature-matrix length
+        rows = bdays - int(9 * years) - 65  # realistic feature-matrix length
         folds = list(splitter.split(_X(rows)))
         assert len(folds) == n_splits
 
@@ -274,7 +274,7 @@ class TestCoverageNSplits:
         )
         bdays = len(pd.bdate_range(start, end))
         years = bdays / 261
-        rows = bdays - int(9 * years) - 200
+        rows = bdays - int(9 * years) - 65
 
         last_oos_row = min_train + gap + n_splits * test
         # Anything more than ~2 folds short of the end defeats the purpose.

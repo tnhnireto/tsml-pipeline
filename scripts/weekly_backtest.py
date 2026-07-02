@@ -33,7 +33,7 @@ from tsml.portfolio.weekly_backtest import (
 )
 from tsml.reporting.exposure_plots import plot_exposure_timeline
 from tsml.reporting.plots import plot_strategy_vs_benchmarks
-from tsml.validation.splitters import WalkForwardSplit
+from tsml.validation.splitters import WalkForwardSplit, coverage_n_splits
 
 # Same universe and config as run_weekly_signal.py / run_etoro_demo.py
 UNIVERSE = [

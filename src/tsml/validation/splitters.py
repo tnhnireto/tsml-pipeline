@@ -122,7 +122,7 @@ def coverage_n_splits(
     min_train_size: int = 252,
     test_size: int = 63,
     gap: int = 0,
-    warmup_rows: int = 200,
+    warmup_rows: int = 70,
 ) -> int:
     """
     Estimate how many walk-forward folds fit between ``start`` and ``end``.
@@ -136,7 +136,7 @@ def coverage_n_splits(
 
     The row count is estimated from business days, deliberately shaved for
     market holidays (~4%) and the feature warmup (``warmup_rows``; the
-    extended feature sets drop ~200 rows for SMA-200 style features).
+    feature pipeline drops ~25-65 leading rows depending on feature set).
     Underestimating is safe — at worst the final ``< test_size`` rows are
     forward-filled — while overestimating would make the splitter raise
     and callers skip symbols entirely.
