@@ -27,14 +27,29 @@ from tsml.portfolio.parameter_sweep import (
     run_parameter_sweep,
 )
 from tsml.reporting.parameter_sweep_plots import generate_parameter_sweep_plots
-from tsml.validation.splitters import WalkForwardSplit
+from tsml.validation.splitters import WalkForwardSplit, coverage_n_splits
 
 UNIVERSE = [
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
     "TSLA", "JPM", "JNJ", "XOM", "V", "GS", "NFLX",
 ]
 
-WALK_FORWARD = WalkForwardSplit(n_splits=5, min_train_size=252, test_size=63, gap=1)
+TARGET = "direction_5d"
+FEATURE_SET = "extended_v2"
+
+
+# gap must cover the 5-day label horizon of direction_5d.
+def _make_splitter(start: str, end: str) -> WalkForwardSplit:
+    """Size folds to the date range so OOS scores cover the whole backtest
+    instead of forward-filling stale probabilities past fold 5."""
+    return WalkForwardSplit(
+        n_splits=coverage_n_splits(
+            start, end, min_train_size=252, test_size=63, gap=5
+        ),
+        min_train_size=252,
+        test_size=63,
+        gap=5,
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -103,8 +118,10 @@ def main() -> None:
         start=args.start,
         end=end,
         model=CalibratedLogisticRegressionModel(),
-        splitter=WALK_FORWARD,
+        splitter=_make_splitter(args.start, end),
         grid=grid,
+        target=TARGET,
+        feature_set=FEATURE_SET,
         fast=args.fast,
         max_combinations=args.max_combinations,
         seed=args.seed,

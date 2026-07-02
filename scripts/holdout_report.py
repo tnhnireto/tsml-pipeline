@@ -28,14 +28,32 @@ from tsml.portfolio.holdout_eval import (
     run_holdout_evaluation,
 )
 from tsml.reporting.holdout_plots import plot_holdout_equity
-from tsml.validation.splitters import WalkForwardSplit
+from tsml.validation.splitters import WalkForwardSplit, coverage_n_splits
 
 UNIVERSE = [
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
     "TSLA", "JPM", "JNJ", "XOM", "V", "GS", "NFLX",
 ]
 
-WALK_FORWARD = WalkForwardSplit(n_splits=5, min_train_size=252, test_size=63, gap=1)
+
+# gap must cover the 5-day label horizon of direction_5d.
+def _make_splitter(start: str, end: str) -> WalkForwardSplit:
+    """Size folds to the date range so OOS scores cover the whole backtest
+    instead of forward-filling stale probabilities past fold 5."""
+    return WalkForwardSplit(
+        n_splits=coverage_n_splits(
+            start, end, min_train_size=252, test_size=63, gap=5
+        ),
+        min_train_size=252,
+        test_size=63,
+        gap=5,
+    )
+
+# Live config overrides applied on top of DEFAULT_STRATEGY.
+STRATEGY_CONFIG = dict(
+    target="direction_5d",
+    feature_set="extended_v2",
+)
 
 REPORT_PATH = Path("reports/holdout_report.txt")
 EQUITY_PLOT_PATH = Path("reports/holdout_equity.png")
@@ -82,7 +100,8 @@ def main() -> None:
         UNIVERSE,
         periods=periods,
         model=CalibratedLogisticRegressionModel(),
-        splitter=WALK_FORWARD,
+        splitter=_make_splitter(periods.full_start(), periods.full_end()),
+        strategy_config=STRATEGY_CONFIG,
     )
 
     report = format_holdout_report(result)

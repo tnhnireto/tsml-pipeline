@@ -57,18 +57,24 @@ UNIVERSE = [
 TOP_N = 5
 MIN_SCORE = 0.55
 MIN_SCORE_DOWNTREND = 0.62
-TARGET = "threshold"
-FEATURE_SET = "extended"
+TARGET = "direction_5d"
+FEATURE_SET = "extended_v2"
 CASH_BUFFER_PCT = 0.05
 COSTS_BPS = 5.0
 INITIAL_CAPITAL = 100_000.0
 
-WALK_FORWARD = WalkForwardSplit(
-    n_splits=5,
-    min_train_size=252,
-    test_size=63,
-    gap=1,
-)
+# gap must cover the 5-day label horizon of direction_5d.
+def _make_splitter(start: str, end: str) -> WalkForwardSplit:
+    """Size folds to the date range so OOS scores cover the whole backtest
+    instead of forward-filling stale probabilities past fold 5."""
+    return WalkForwardSplit(
+        n_splits=coverage_n_splits(
+            start, end, min_train_size=252, test_size=63, gap=5
+        ),
+        min_train_size=252,
+        test_size=63,
+        gap=5,
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -123,9 +129,21 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--feature-set",
-        choices=("legacy", "extended"),
+        choices=("legacy", "extended", "extended_v2"),
         default=FEATURE_SET,
-        help="Model feature set (default: extended).",
+        help="Model feature set (default: extended_v2).",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=MIN_SCORE,
+        help="Minimum score for buy eligibility.",
+    )
+    parser.add_argument(
+        "--min-score-downtrend",
+        type=float,
+        default=MIN_SCORE_DOWNTREND,
+        help="Stricter min score when below SMA200.",
     )
     parser.add_argument(
         "--compare-features",
@@ -178,11 +196,12 @@ def _regime_overlay_config(args: argparse.Namespace) -> RegimeOverlayConfig:
 def main() -> None:
     args = _parse_args()
     end = args.end or date.today().isoformat()
+    walk_forward = _make_splitter(args.start, end)
 
     print(f"Universe: {', '.join(UNIVERSE)}")
     print(f"Period:   {args.start} -> {end}")
     print(f"Config:   target={TARGET}, top_n={TOP_N}, "
-          f"min_score={MIN_SCORE}, min_score_downtrend={MIN_SCORE_DOWNTREND}")
+          f"min_score={args.min_score}, min_score_downtrend={args.min_score_downtrend}")
     print(f"          feature_set={args.feature_set}")
     print(f"          cash_buffer={CASH_BUFFER_PCT:.0%}, costs={COSTS_BPS} bps")
     if not args.no_turnover_control:
@@ -199,8 +218,8 @@ def main() -> None:
     simulate_kw = dict(
         target=TARGET,
         top_n=TOP_N,
-        min_score=MIN_SCORE,
-        min_score_downtrend=MIN_SCORE_DOWNTREND,
+        min_score=args.min_score,
+        min_score_downtrend=args.min_score_downtrend,
         cash_buffer_pct=CASH_BUFFER_PCT,
         costs_bps=COSTS_BPS,
         initial_capital=INITIAL_CAPITAL,
@@ -217,7 +236,7 @@ def main() -> None:
             start=args.start,
             end=end,
             model=CalibratedLogisticRegressionModel(),
-            splitter=WALK_FORWARD,
+            splitter=walk_forward,
             regime_overlay=_regime_overlay_config(args),
             **simulate_kw,
         )
@@ -231,7 +250,7 @@ def main() -> None:
             start=args.start,
             end=end,
             model=CalibratedLogisticRegressionModel(),
-            splitter=WALK_FORWARD,
+            splitter=walk_forward,
             **simulate_kw,
         )
         print(format_feature_set_comparison(comparison))
@@ -249,7 +268,7 @@ def main() -> None:
         start=args.start,
         end=end,
         model=CalibratedLogisticRegressionModel(),
-        splitter=WALK_FORWARD,
+        splitter=walk_forward,
         benchmark_symbols=("SPY", "QQQ"),
         compare_baseline=not args.no_baseline,
         regime_overlay=regime_overlay,

@@ -211,3 +211,71 @@ class TestManualInvariant:
         for train_idx, test_idx in splitter.split(_X()):
             real_overlap = set(train_idx) & set(test_idx)
             assert len(real_overlap) == 0
+
+
+# ---------------------------------------------------------------------------
+# coverage_n_splits
+# ---------------------------------------------------------------------------
+
+class TestCoverageNSplits:
+    """Sizing folds to a date range keeps OOS coverage honest."""
+
+    def test_returns_at_least_one(self):
+        from tsml.validation.splitters import coverage_n_splits
+
+        assert coverage_n_splits("2024-01-01", "2024-03-01") == 1
+
+    def test_scales_with_range(self):
+        from tsml.validation.splitters import coverage_n_splits
+
+        short = coverage_n_splits("2019-01-01", "2020-01-01", gap=5)
+        long = coverage_n_splits("2019-01-01", "2025-01-01", gap=5)
+        assert long > short
+
+    def test_undershoots_actual_trading_rows(self):
+        """The estimate must never demand more rows than a real trading
+        calendar provides, or downstream code would skip symbols."""
+        from tsml.validation.splitters import coverage_n_splits
+
+        start, end = "2017-01-01", "2025-06-30"
+        n_splits = coverage_n_splits(start, end, min_train_size=252, test_size=63, gap=5)
+
+        # Real NYSE trading rows ~= bdays minus ~9 holidays/year, and the
+        # extended feature sets drop ~200 warmup rows before splitting.
+        bdays = len(pd.bdate_range(start, end))
+        years = bdays / 261
+        realistic_feature_rows = bdays - int(9 * years) - 200
+
+        required = 252 + n_splits * 63 + 5
+        assert required <= realistic_feature_rows
+
+    def test_splitter_accepts_estimated_folds(self):
+        from tsml.validation.splitters import coverage_n_splits
+
+        start, end = "2018-01-01", "2024-12-31"
+        n_splits = coverage_n_splits(start, end, min_train_size=252, test_size=63, gap=5)
+        splitter = WalkForwardSplit(
+            n_splits=n_splits, min_train_size=252, test_size=63, gap=5
+        )
+        bdays = len(pd.bdate_range(start, end))
+        years = bdays / 261
+        rows = bdays - int(9 * years) - 200  # realistic feature-matrix length
+        folds = list(splitter.split(_X(rows)))
+        assert len(folds) == n_splits
+
+    def test_coverage_reaches_near_end_of_range(self):
+        """Final OOS row should land within ~test_size rows of the end."""
+        from tsml.validation.splitters import coverage_n_splits
+
+        start, end = "2017-01-01", "2025-06-30"
+        min_train, test, gap = 252, 63, 5
+        n_splits = coverage_n_splits(
+            start, end, min_train_size=min_train, test_size=test, gap=gap
+        )
+        bdays = len(pd.bdate_range(start, end))
+        years = bdays / 261
+        rows = bdays - int(9 * years) - 200
+
+        last_oos_row = min_train + gap + n_splits * test
+        # Anything more than ~2 folds short of the end defeats the purpose.
+        assert rows - last_oos_row < 2 * test

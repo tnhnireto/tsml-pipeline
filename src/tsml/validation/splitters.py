@@ -113,3 +113,36 @@ class WalkForwardSplit:
     def get_n_splits(self) -> int:
         """Return the number of folds. Matches the sklearn CV interface."""
         return self.n_splits
+
+
+def coverage_n_splits(
+    start: str,
+    end: str,
+    *,
+    min_train_size: int = 252,
+    test_size: int = 63,
+    gap: int = 0,
+    warmup_rows: int = 200,
+) -> int:
+    """
+    Estimate how many walk-forward folds fit between ``start`` and ``end``.
+
+    A fixed, small ``n_splits`` only produces out-of-sample predictions for
+    the first ``n_splits * test_size`` rows after the initial training
+    window.  Downstream consumers (e.g. the portfolio simulator) forward-
+    fill the last known score, so a backtest that extends past the final
+    fold silently trades on stale, frozen probabilities.  Sizing
+    ``n_splits`` to the date range keeps out-of-sample coverage honest.
+
+    The row count is estimated from business days, deliberately shaved for
+    market holidays (~4%) and the feature warmup (``warmup_rows``; the
+    extended feature sets drop ~200 rows for SMA-200 style features).
+    Underestimating is safe — at worst the final ``< test_size`` rows are
+    forward-filled — while overestimating would make the splitter raise
+    and callers skip symbols entirely.
+
+    Returns at least 1.
+    """
+    approx_bdays = len(pd.bdate_range(start, end))
+    usable = int(approx_bdays * 0.96) - warmup_rows
+    return max(1, (usable - min_train_size - gap) // test_size)
