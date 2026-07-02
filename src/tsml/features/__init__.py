@@ -1,6 +1,8 @@
 from tsml.features.benchmarks import DEFAULT_BENCHMARKS, load_benchmark_closes
 from tsml.features.pipeline import (
+    BENCHMARK_FEATURE_SETS,
     EXTENDED_FEATURE_COLUMNS,
+    EXTENDED_V2_FEATURE_COLUMNS,
     LEGACY_FEATURE_COLUMNS,
     build_features,
     make_dataset,
@@ -35,6 +37,8 @@ __all__ = [
     "load_benchmark_closes",
     "LEGACY_FEATURE_COLUMNS",
     "EXTENDED_FEATURE_COLUMNS",
+    "EXTENDED_V2_FEATURE_COLUMNS",
+    "BENCHMARK_FEATURE_SETS",
     "daily_returns",
     "log_returns",
     "lagged_returns",

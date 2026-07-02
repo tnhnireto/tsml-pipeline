@@ -63,6 +63,7 @@ import pandas as pd
 from tsml.data_loader import YFinanceLoader
 from tsml.data_loader.base import DataLoader
 from tsml.features.benchmarks import load_benchmark_closes
+from tsml.features.pipeline import BENCHMARK_FEATURE_SETS
 from tsml.pipelines.train import run_walk_forward_proba
 from tsml.validation.splitters import WalkForwardSplit
 
@@ -138,7 +139,7 @@ def rank_universe(
         loader = YFinanceLoader(cache_dir="data/raw")
 
     benchmarks = None
-    if feature_set == "extended":
+    if feature_set in BENCHMARK_FEATURE_SETS:
         benchmarks = load_benchmark_closes(loader, start, end)
 
     records: list[dict[str, Any]] = []

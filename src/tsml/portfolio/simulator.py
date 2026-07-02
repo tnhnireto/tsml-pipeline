@@ -73,6 +73,7 @@ import pandas as pd
 from tsml.data_loader import YFinanceLoader
 from tsml.data_loader.base import DataLoader
 from tsml.features.benchmarks import load_benchmark_closes
+from tsml.features.pipeline import BENCHMARK_FEATURE_SETS
 from tsml.pipelines.train import run_walk_forward_proba
 from tsml.portfolio.backtest_strategy import generate_backtest_signals
 from tsml.portfolio.ranker import compute_context_as_of
@@ -166,7 +167,7 @@ def prepare_simulation_inputs(
     proba_map: dict[str, pd.Series] = {}
 
     benchmarks = None
-    if feature_set == "extended":
+    if feature_set in BENCHMARK_FEATURE_SETS:
         benchmarks = load_benchmark_closes(loader, start_date, end_date)
 
     for symbol in symbols:
@@ -332,7 +333,7 @@ def simulate(
         proba_map = {}
 
         benchmarks = None
-        if feature_set == "extended":
+        if feature_set in BENCHMARK_FEATURE_SETS:
             benchmarks = load_benchmark_closes(loader, start_date, end_date)
 
         spy_close = None
