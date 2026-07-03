@@ -25,14 +25,22 @@ from tsml.portfolio.robustness import (
     run_robustness_analysis,
 )
 from tsml.reporting.robustness_plots import plot_rolling_performance
-from tsml.validation.splitters import WalkForwardSplit
+from tsml.validation.splitters import (
+    AdaptiveWalkForwardParams,
+    make_adaptive_walk_forward_splitter,
+)
 
 UNIVERSE = [
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
     "TSLA", "JPM", "JNJ", "XOM", "V", "GS", "NFLX",
 ]
 
-WALK_FORWARD = WalkForwardSplit(n_splits=5, min_train_size=252, test_size=63, gap=1)
+TARGET = "direction_5d"
+FEATURE_SET = "extended_v2"
+
+
+# gap must cover the 5-day label horizon of direction_5d.
+_WALK_FORWARD_PARAMS = AdaptiveWalkForwardParams(gap=5)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -85,7 +93,7 @@ def main() -> None:
         )
 
     print(f"Running robustness analysis  {args.start} -> {end}")
-    print(f"Universe: {len(UNIVERSE)} symbols, feature_set=extended")
+    print(f"Universe: {len(UNIVERSE)} symbols, feature_set={FEATURE_SET}, target={TARGET}")
     if variants:
         print(f"Universe variants: {', '.join(variants.keys())}")
     print()
@@ -96,10 +104,12 @@ def main() -> None:
         start=args.start,
         end=end,
         model=model,
-        splitter=WALK_FORWARD,
+        splitter=make_adaptive_walk_forward_splitter(
+            args.start, end, _WALK_FORWARD_PARAMS
+        ),
         universe_variants=variants,
-        target="threshold",
-        feature_set="extended",
+        target=TARGET,
+        feature_set=FEATURE_SET,
         top_n=5,
         min_score=0.55,
         min_score_downtrend=0.62,

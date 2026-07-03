@@ -71,7 +71,34 @@ EXTENDED_FEATURE_COLUMNS: tuple[str, ...] = (
     "ret60d_over_vol20d",
 )
 
-_VALID_FEATURE_SETS = ("legacy", "extended")
+# Base block of the "extended_v2" feature set.  Identical to the legacy
+# block except:
+#   - "rolling_mean_10" (a raw, non-stationary price level) is replaced by
+#     "price_vs_mean_10" (close / SMA10 - 1, a stationary ratio).
+#   - "log_return_1d" is dropped — it is nearly perfectly collinear with
+#     "return_1d" for daily data.
+# "return_1d" is kept: it is required by the PreviousDirection baseline.
+BASE_V2_FEATURE_COLUMNS: tuple[str, ...] = (
+    "return_1d",
+    "return_lag1",
+    "return_lag2",
+    "return_lag3",
+    "price_vs_mean_10",
+    "rolling_vol_10",
+    "sma_ratio_5_20",
+    "rsi_14",
+    "vol_ratio_5_20",
+    "price_vs_mean_20",
+)
+
+EXTENDED_V2_FEATURE_COLUMNS: tuple[str, ...] = (
+    BASE_V2_FEATURE_COLUMNS + EXTENDED_FEATURE_COLUMNS
+)
+
+_VALID_FEATURE_SETS = ("legacy", "extended", "extended_v2")
+
+# Feature sets that need SPY/QQQ benchmark close series.
+BENCHMARK_FEATURE_SETS: tuple[str, ...] = ("extended", "extended_v2")
 
 
 def build_features(
@@ -94,9 +121,12 @@ def build_features(
         ``"legacy"`` — original 11 single-asset features.
         ``"extended"`` — legacy features plus cross-sectional / regime
         features (requires SPY and QQQ benchmark closes).
+        ``"extended_v2"`` — like ``"extended"`` but with a stationary base
+        block: ``rolling_mean_10`` is replaced by ``price_vs_mean_10``
+        (close / SMA10 − 1) and the redundant ``log_return_1d`` is dropped.
     benchmarks:
         Mapping of benchmark ticker to close price series.  Required when
-        ``feature_set="extended"``.
+        ``feature_set`` is ``"extended"`` or ``"extended_v2"``.
 
     Returns
     -------
@@ -113,21 +143,25 @@ def build_features(
 
     features = pd.DataFrame(index=df.index)
     features["return_1d"]         = daily_returns(close)
-    features["log_return_1d"]     = log_returns(close)
+    if feature_set != "extended_v2":
+        features["log_return_1d"] = log_returns(close)
     features["return_lag1"]       = lagged_returns(close, lag=1)
     features["return_lag2"]       = lagged_returns(close, lag=2)
     features["return_lag3"]       = lagged_returns(close, lag=3)
-    features["rolling_mean_10"]   = rolling_mean(close, window=10)
+    if feature_set == "extended_v2":
+        features["price_vs_mean_10"] = price_vs_mean(close, window=10)
+    else:
+        features["rolling_mean_10"]  = rolling_mean(close, window=10)
     features["rolling_vol_10"]    = rolling_volatility(close, window=10)
     features["sma_ratio_5_20"]    = sma_ratio(close, short_window=5, long_window=20)
     features["rsi_14"]            = rsi(close, window=14)
     features["vol_ratio_5_20"]    = rolling_vol_ratio(close, short_window=5, long_window=20)
     features["price_vs_mean_20"]  = price_vs_mean(close, window=20)
 
-    if feature_set == "extended":
+    if feature_set in BENCHMARK_FEATURE_SETS:
         if benchmarks is None:
             raise ValueError(
-                "benchmarks must be provided when feature_set='extended'."
+                f"benchmarks must be provided when feature_set='{feature_set}'."
             )
         missing = set(DEFAULT_BENCHMARKS) - set(benchmarks)
         if missing:
@@ -209,9 +243,11 @@ def make_dataset(
             dropped.  The model is trained only on strongly-directional
             days, then applied to all test dates.
     feature_set:
-        ``"legacy"`` or ``"extended"`` — see :func:`build_features`.
+        ``"legacy"``, ``"extended"`` or ``"extended_v2"`` — see
+        :func:`build_features`.
     benchmarks:
-        SPY/QQQ close series required when ``feature_set="extended"``.
+        SPY/QQQ close series required when ``feature_set`` is
+        ``"extended"`` or ``"extended_v2"``.
 
     Returns
     -------

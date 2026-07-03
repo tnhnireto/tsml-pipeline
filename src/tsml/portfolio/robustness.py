@@ -17,6 +17,7 @@ import pandas as pd
 from tsml.data_loader import YFinanceLoader
 from tsml.data_loader.base import DataLoader
 from tsml.features.benchmarks import load_benchmark_closes
+from tsml.features.pipeline import BENCHMARK_FEATURE_SETS
 from tsml.metrics.returns import cagr, max_drawdown, sharpe_ratio, total_return
 from tsml.pipelines.diagnostics import (
     FoldImportance,
@@ -258,7 +259,7 @@ def collect_score_calibration(
     Forward returns are used for evaluation only — never as model inputs.
     """
     benchmarks = None
-    if feature_set == "extended":
+    if feature_set in BENCHMARK_FEATURE_SETS:
         benchmarks = load_benchmark_closes(loader, start, end)
 
     records: list[dict] = []
@@ -340,7 +341,7 @@ def collect_feature_importance_diagnostics(
     reasonable while capturing cross-sectional stability.
     """
     benchmarks = None
-    if feature_set == "extended":
+    if feature_set in BENCHMARK_FEATURE_SETS:
         benchmarks = load_benchmark_closes(loader, start, end)
 
     all_folds: list[FoldImportance] = []

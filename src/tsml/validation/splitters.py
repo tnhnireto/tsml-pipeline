@@ -39,6 +39,8 @@ Example
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -113,3 +115,75 @@ class WalkForwardSplit:
     def get_n_splits(self) -> int:
         """Return the number of folds. Matches the sklearn CV interface."""
         return self.n_splits
+
+
+def coverage_n_splits(
+    start: str,
+    end: str,
+    *,
+    min_train_size: int = 252,
+    test_size: int = 63,
+    gap: int = 0,
+    warmup_rows: int = 70,
+) -> int:
+    """
+    Estimate how many walk-forward folds fit between ``start`` and ``end``.
+
+    A fixed, small ``n_splits`` only produces out-of-sample predictions for
+    the first ``n_splits * test_size`` rows after the initial training
+    window.  Downstream consumers (e.g. the portfolio simulator) forward-
+    fill the last known score, so a backtest that extends past the final
+    fold silently trades on stale, frozen probabilities.  Sizing
+    ``n_splits`` to the date range keeps out-of-sample coverage honest.
+
+    The row count is estimated from business days, deliberately shaved for
+    market holidays (~4%) and the feature warmup (``warmup_rows``; the
+    feature pipeline drops ~25-65 leading rows depending on feature set).
+    Underestimating is safe — at worst the final ``< test_size`` rows are
+    forward-filled — while overestimating would make the splitter raise
+    and callers skip symbols entirely.
+
+    Returns at least 1.
+    """
+    approx_bdays = len(pd.bdate_range(start, end))
+    usable = int(approx_bdays * 0.96) - warmup_rows
+    return max(1, (usable - min_train_size - gap) // test_size)
+
+
+@dataclass(frozen=True)
+class AdaptiveWalkForwardParams:
+    """Shared walk-forward sizing used by coverage estimation and splitting."""
+
+    min_train_size: int = 252
+    test_size: int = 63
+    gap: int = 0
+    warmup_rows: int = 70
+
+
+def make_adaptive_walk_forward_splitter(
+    start: str,
+    end: str,
+    params: AdaptiveWalkForwardParams | None = None,
+) -> WalkForwardSplit:
+    """
+    Build a walk-forward splitter sized to cover ``start`` through ``end``.
+
+    ``coverage_n_splits`` and ``WalkForwardSplit`` receive the same
+    ``min_train_size``, ``test_size``, and ``gap`` from ``params`` so the
+    fold count cannot drift from the splitter configuration.
+    """
+    p = params or AdaptiveWalkForwardParams()
+    n_splits = coverage_n_splits(
+        start,
+        end,
+        min_train_size=p.min_train_size,
+        test_size=p.test_size,
+        gap=p.gap,
+        warmup_rows=p.warmup_rows,
+    )
+    return WalkForwardSplit(
+        n_splits=n_splits,
+        min_train_size=p.min_train_size,
+        test_size=p.test_size,
+        gap=p.gap,
+    )

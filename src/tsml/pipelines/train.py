@@ -35,7 +35,8 @@ from typing import Any
 
 import pandas as pd
 
-from tsml.features.pipeline import make_dataset
+from tsml.features.pipeline import build_features, make_dataset
+from tsml.features.targets import target_label_horizon
 from tsml.validation.splitters import WalkForwardSplit
 
 
@@ -165,5 +166,115 @@ def run_walk_forward_proba(
         raise RuntimeError("No probabilities were produced. Check splitter parameters.")
 
     result = pd.Series(probas, name="proba_up")
+    result.index.name = "date"
+    return result
+
+
+def run_full_fit_latest_proba(
+    df: pd.DataFrame,
+    model: Any,
+    target: str = "direction",
+    *,
+    feature_set: str = "legacy",
+    benchmarks: dict[str, pd.Series] | None = None,
+    smoothing_window: int = 1,
+    min_train_rows: int = 252,
+) -> pd.Series:
+    """
+    Fit a fresh model on ALL labelled history and score the latest rows.
+
+    This is the **live-signal** counterpart of ``run_walk_forward_proba``.
+    Walk-forward probabilities are ideal for evaluation but the final OOS
+    fold's model can be up to ``test_size`` days stale.  For live ranking we
+    instead:
+
+    1. Build the full (X, y) training set with ``make_dataset``.  For
+       forward-looking targets (e.g. ``direction_5d``) the last rows have no
+       label yet and are automatically excluded from training.
+    2. Fit ``model`` on that entire labelled history — the freshest possible
+       model, trained on data up to today.
+    3. Recompute features for **all** rows (labels not required) and return
+       P(up) for the last ``smoothing_window`` feature rows, which include
+       the most recent trading day.
+
+    Leakage guarantee
+    -----------------
+  When ``smoothing_window <= target_label_horizon(target)``:
+
+    Training labels only use realised prices; rows whose labels would need
+    future data are dropped by ``make_dataset``.  Prediction rows use only
+    backward-looking features.  No future information is used anywhere.
+
+    If ``smoothing_window`` exceeds the target's label horizon, some scored
+    rows overlap the training set and a ``ValueError`` is raised.
+
+    Parameters
+    ----------
+    df:
+        Raw OHLCV DataFrame.
+    model:
+        Any object with ``.fit(X, y)`` and ``.predict_proba(X)`` methods.
+    target:
+        Target type passed to ``make_dataset``.
+    feature_set:
+        ``"legacy"``, ``"extended"`` or ``"extended_v2"``.
+    benchmarks:
+        SPY/QQQ close series when the feature set requires them.
+    smoothing_window:
+        Number of most-recent feature rows to score (>= 1).  Callers can
+        average the returned probabilities to smooth day-to-day noise.
+    min_train_rows:
+        Minimum labelled training rows required.  Below this a
+        ``ValueError`` is raised so callers can skip the symbol gracefully.
+
+    Returns
+    -------
+    pd.Series
+        P(up) for the last ``smoothing_window`` feature dates, indexed by
+        date, name ``"proba_up"``.  The final entry corresponds to the most
+        recent trading day in ``df``.
+    """
+    if smoothing_window < 1:
+        raise ValueError(f"smoothing_window must be >= 1, got {smoothing_window}.")
+    if min_train_rows < 1:
+        raise ValueError(f"min_train_rows must be >= 1, got {min_train_rows}.")
+
+    horizon = target_label_horizon(target)
+    if smoothing_window > horizon:
+        raise ValueError(
+            f"smoothing_window ({smoothing_window}) exceeds the label horizon "
+            f"for target '{target}' ({horizon}). Scoring would overlap training "
+            f"rows whose labels were used in fit()."
+        )
+
+    X, y = make_dataset(
+        df,
+        target=target,
+        feature_set=feature_set,
+        benchmarks=benchmarks,
+    )
+    if len(X) < min_train_rows:
+        raise ValueError(
+            f"Not enough labelled rows to fit a live model: "
+            f"got {len(X)}, need at least {min_train_rows}."
+        )
+
+    model.fit(X, y)
+
+    # Features exist for rows whose *labels* are still unknown (the forward
+    # horizon) — exactly the rows a live prediction must cover.
+    features = build_features(
+        df, feature_set=feature_set, benchmarks=benchmarks
+    ).dropna()
+    if len(features) < smoothing_window:
+        raise ValueError(
+            f"Not enough feature rows to score: got {len(features)}, "
+            f"need at least {smoothing_window}."
+        )
+
+    X_latest = features.iloc[-smoothing_window:]
+    probas = model.predict_proba(X_latest)[:, 1]
+
+    result = pd.Series(probas, index=X_latest.index, name="proba_up")
     result.index.name = "date"
     return result
