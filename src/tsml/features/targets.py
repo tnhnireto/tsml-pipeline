@@ -16,6 +16,30 @@ from __future__ import annotations
 
 import pandas as pd
 
+# Forward rows excluded from training labels per target type.
+_TARGET_LABEL_HORIZONS: dict[str, int] = {
+    "direction": 1,
+    "return": 1,
+    "direction_5d": 5,
+    "threshold": 1,
+}
+
+
+def target_label_horizon(target: str) -> int:
+    """
+    Number of trailing rows whose labels require future prices.
+
+    Used to guard live scoring: ``smoothing_window`` must not exceed this
+    value or in-sample rows would be scored after training.
+    """
+    try:
+        return _TARGET_LABEL_HORIZONS[target]
+    except KeyError:
+        valid = tuple(_TARGET_LABEL_HORIZONS)
+        raise ValueError(
+            f"target must be one of {valid}, got '{target}'."
+        ) from None
+
 
 def next_day_direction(close: pd.Series) -> pd.Series:
     """

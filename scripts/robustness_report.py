@@ -25,7 +25,10 @@ from tsml.portfolio.robustness import (
     run_robustness_analysis,
 )
 from tsml.reporting.robustness_plots import plot_rolling_performance
-from tsml.validation.splitters import WalkForwardSplit, coverage_n_splits
+from tsml.validation.splitters import (
+    AdaptiveWalkForwardParams,
+    make_adaptive_walk_forward_splitter,
+)
 
 UNIVERSE = [
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
@@ -37,17 +40,7 @@ FEATURE_SET = "extended_v2"
 
 
 # gap must cover the 5-day label horizon of direction_5d.
-def _make_splitter(start: str, end: str) -> WalkForwardSplit:
-    """Size folds to the date range so OOS scores cover the whole backtest
-    instead of forward-filling stale probabilities past fold 5."""
-    return WalkForwardSplit(
-        n_splits=coverage_n_splits(
-            start, end, min_train_size=252, test_size=63, gap=5
-        ),
-        min_train_size=252,
-        test_size=63,
-        gap=5,
-    )
+_WALK_FORWARD_PARAMS = AdaptiveWalkForwardParams(gap=5)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -111,7 +104,9 @@ def main() -> None:
         start=args.start,
         end=end,
         model=model,
-        splitter=_make_splitter(args.start, end),
+        splitter=make_adaptive_walk_forward_splitter(
+            args.start, end, _WALK_FORWARD_PARAMS
+        ),
         universe_variants=variants,
         target=TARGET,
         feature_set=FEATURE_SET,

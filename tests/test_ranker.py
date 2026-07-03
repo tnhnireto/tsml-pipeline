@@ -310,6 +310,7 @@ class TestScoringModes:
             model=AlwaysLong(),
             scoring="fresh_fit",
             smoothing_window=5,
+            target="direction_5d",
             start="2015-01-01",
             end="2023-12-31",
             loader=loader_3symbols,

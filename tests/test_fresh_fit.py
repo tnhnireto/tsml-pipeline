@@ -68,7 +68,7 @@ class TestOutput:
     def test_returns_series_of_length_smoothing_window(self):
         df = _make_ohlcv(600)
         result = run_full_fit_latest_proba(
-            df, LogisticRegressionModel(), smoothing_window=5
+            df, LogisticRegressionModel(), target="direction_5d", smoothing_window=5
         )
         assert isinstance(result, pd.Series)
         assert len(result) == 5
@@ -77,14 +77,16 @@ class TestOutput:
     def test_probabilities_in_unit_interval(self):
         df = _make_ohlcv(600)
         result = run_full_fit_latest_proba(
-            df, LogisticRegressionModel(), smoothing_window=5
+            df, LogisticRegressionModel(), target="direction_5d", smoothing_window=5
         )
         assert (result >= 0.0).all()
         assert (result <= 1.0).all()
 
     def test_always_long_scores_one(self):
         df = _make_ohlcv(600)
-        result = run_full_fit_latest_proba(df, AlwaysLong(), smoothing_window=3)
+        result = run_full_fit_latest_proba(
+            df, AlwaysLong(), target="direction_5d", smoothing_window=3
+        )
         assert (result == 1.0).all()
 
     def test_last_scored_date_is_last_feature_date(self):
@@ -170,3 +172,35 @@ class TestValidation:
             run_full_fit_latest_proba(
                 df, LogisticRegressionModel(), min_train_rows=0
             )
+
+
+class TestSmoothingHorizonGuard:
+    """smoothing_window must not exceed the target's label horizon."""
+
+    def test_direction_5d_smoothing_at_horizon_passes(self):
+        df = _make_ohlcv(600)
+        result = run_full_fit_latest_proba(
+            df, LogisticRegressionModel(), target="direction_5d", smoothing_window=5
+        )
+        assert len(result) == 5
+
+    def test_direction_5d_smoothing_above_horizon_raises(self):
+        df = _make_ohlcv(600)
+        with pytest.raises(ValueError, match="smoothing_window"):
+            run_full_fit_latest_proba(
+                df, LogisticRegressionModel(), target="direction_5d", smoothing_window=6
+            )
+
+    def test_direction_smoothing_above_horizon_raises(self):
+        df = _make_ohlcv(600)
+        with pytest.raises(ValueError, match="smoothing_window"):
+            run_full_fit_latest_proba(
+                df, LogisticRegressionModel(), target="direction", smoothing_window=2
+            )
+
+    def test_direction_smoothing_at_horizon_passes(self):
+        df = _make_ohlcv(600)
+        result = run_full_fit_latest_proba(
+            df, LogisticRegressionModel(), target="direction", smoothing_window=1
+        )
+        assert len(result) == 1

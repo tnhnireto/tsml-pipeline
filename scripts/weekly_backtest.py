@@ -33,7 +33,10 @@ from tsml.portfolio.weekly_backtest import (
 )
 from tsml.reporting.exposure_plots import plot_exposure_timeline
 from tsml.reporting.plots import plot_strategy_vs_benchmarks
-from tsml.validation.splitters import WalkForwardSplit, coverage_n_splits
+from tsml.validation.splitters import (
+    AdaptiveWalkForwardParams,
+    make_adaptive_walk_forward_splitter,
+)
 
 # Same universe and config as run_weekly_signal.py / run_etoro_demo.py
 UNIVERSE = [
@@ -64,17 +67,7 @@ COSTS_BPS = 5.0
 INITIAL_CAPITAL = 100_000.0
 
 # gap must cover the 5-day label horizon of direction_5d.
-def _make_splitter(start: str, end: str) -> WalkForwardSplit:
-    """Size folds to the date range so OOS scores cover the whole backtest
-    instead of forward-filling stale probabilities past fold 5."""
-    return WalkForwardSplit(
-        n_splits=coverage_n_splits(
-            start, end, min_train_size=252, test_size=63, gap=5
-        ),
-        min_train_size=252,
-        test_size=63,
-        gap=5,
-    )
+_WALK_FORWARD_PARAMS = AdaptiveWalkForwardParams(gap=5)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -196,7 +189,9 @@ def _regime_overlay_config(args: argparse.Namespace) -> RegimeOverlayConfig:
 def main() -> None:
     args = _parse_args()
     end = args.end or date.today().isoformat()
-    walk_forward = _make_splitter(args.start, end)
+    walk_forward = make_adaptive_walk_forward_splitter(
+        args.start, end, _WALK_FORWARD_PARAMS
+    )
 
     print(f"Universe: {', '.join(UNIVERSE)}")
     print(f"Period:   {args.start} -> {end}")

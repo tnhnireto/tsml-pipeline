@@ -28,7 +28,10 @@ from tsml.portfolio.holdout_eval import (
     run_holdout_evaluation,
 )
 from tsml.reporting.holdout_plots import plot_holdout_equity
-from tsml.validation.splitters import WalkForwardSplit, coverage_n_splits
+from tsml.validation.splitters import (
+    AdaptiveWalkForwardParams,
+    make_adaptive_walk_forward_splitter,
+)
 
 UNIVERSE = [
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
@@ -37,17 +40,7 @@ UNIVERSE = [
 
 
 # gap must cover the 5-day label horizon of direction_5d.
-def _make_splitter(start: str, end: str) -> WalkForwardSplit:
-    """Size folds to the date range so OOS scores cover the whole backtest
-    instead of forward-filling stale probabilities past fold 5."""
-    return WalkForwardSplit(
-        n_splits=coverage_n_splits(
-            start, end, min_train_size=252, test_size=63, gap=5
-        ),
-        min_train_size=252,
-        test_size=63,
-        gap=5,
-    )
+_WALK_FORWARD_PARAMS = AdaptiveWalkForwardParams(gap=5)
 
 # Live config overrides applied on top of DEFAULT_STRATEGY.
 STRATEGY_CONFIG = dict(
@@ -100,7 +93,9 @@ def main() -> None:
         UNIVERSE,
         periods=periods,
         model=CalibratedLogisticRegressionModel(),
-        splitter=_make_splitter(periods.full_start(), periods.full_end()),
+        splitter=make_adaptive_walk_forward_splitter(
+            periods.full_start(), periods.full_end(), _WALK_FORWARD_PARAMS
+        ),
         strategy_config=STRATEGY_CONFIG,
     )
 

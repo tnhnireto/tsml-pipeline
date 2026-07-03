@@ -39,6 +39,8 @@ Example
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -146,3 +148,42 @@ def coverage_n_splits(
     approx_bdays = len(pd.bdate_range(start, end))
     usable = int(approx_bdays * 0.96) - warmup_rows
     return max(1, (usable - min_train_size - gap) // test_size)
+
+
+@dataclass(frozen=True)
+class AdaptiveWalkForwardParams:
+    """Shared walk-forward sizing used by coverage estimation and splitting."""
+
+    min_train_size: int = 252
+    test_size: int = 63
+    gap: int = 0
+    warmup_rows: int = 70
+
+
+def make_adaptive_walk_forward_splitter(
+    start: str,
+    end: str,
+    params: AdaptiveWalkForwardParams | None = None,
+) -> WalkForwardSplit:
+    """
+    Build a walk-forward splitter sized to cover ``start`` through ``end``.
+
+    ``coverage_n_splits`` and ``WalkForwardSplit`` receive the same
+    ``min_train_size``, ``test_size``, and ``gap`` from ``params`` so the
+    fold count cannot drift from the splitter configuration.
+    """
+    p = params or AdaptiveWalkForwardParams()
+    n_splits = coverage_n_splits(
+        start,
+        end,
+        min_train_size=p.min_train_size,
+        test_size=p.test_size,
+        gap=p.gap,
+        warmup_rows=p.warmup_rows,
+    )
+    return WalkForwardSplit(
+        n_splits=n_splits,
+        min_train_size=p.min_train_size,
+        test_size=p.test_size,
+        gap=p.gap,
+    )

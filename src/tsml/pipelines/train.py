@@ -36,6 +36,7 @@ from typing import Any
 import pandas as pd
 
 from tsml.features.pipeline import build_features, make_dataset
+from tsml.features.targets import target_label_horizon
 from tsml.validation.splitters import WalkForwardSplit
 
 
@@ -198,9 +199,14 @@ def run_full_fit_latest_proba(
 
     Leakage guarantee
     -----------------
+  When ``smoothing_window <= target_label_horizon(target)``:
+
     Training labels only use realised prices; rows whose labels would need
     future data are dropped by ``make_dataset``.  Prediction rows use only
     backward-looking features.  No future information is used anywhere.
+
+    If ``smoothing_window`` exceeds the target's label horizon, some scored
+    rows overlap the training set and a ``ValueError`` is raised.
 
     Parameters
     ----------
@@ -232,6 +238,14 @@ def run_full_fit_latest_proba(
         raise ValueError(f"smoothing_window must be >= 1, got {smoothing_window}.")
     if min_train_rows < 1:
         raise ValueError(f"min_train_rows must be >= 1, got {min_train_rows}.")
+
+    horizon = target_label_horizon(target)
+    if smoothing_window > horizon:
+        raise ValueError(
+            f"smoothing_window ({smoothing_window}) exceeds the label horizon "
+            f"for target '{target}' ({horizon}). Scoring would overlap training "
+            f"rows whose labels were used in fit()."
+        )
 
     X, y = make_dataset(
         df,
